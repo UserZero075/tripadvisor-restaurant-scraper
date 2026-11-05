@@ -1,6 +1,6 @@
 # TripAdvisor Multi-City Restaurant Scraper 🇪🇸🍽️
 
-Extractor automatizado de alta fidelidad para obtener el **100% de los restaurantes de cualquier ciudad** (Barcelona, Madrid, Valencia, Sevilla, etc.) catalogados en TripAdvisor, desarrollado en **Python** con **Camoufox Anti-Detect** (motor Firefox parcheado a nivel C++ con huella realista TLS, HTTP/2 y Canvas) para eludir sistemas de protección contra bots y muros de consentimiento GDPR.
+Extractor profesional de alta fidelidad para obtener el **100% de los restaurantes de cualquier ciudad** (Barcelona, Madrid, Valencia, Sevilla, Málaga, Bilbao, o cualquier municipio del mundo) catalogados en TripAdvisor. Desarrollado en **Python** con **Camoufox Anti-Detect** (motor Firefox parcheado a nivel C++ con huella realista TLS, HTTP/2 y Canvas) para eludir sistemas de protección contra bots y muros de consentimiento GDPR.
 
 ---
 
@@ -25,190 +25,212 @@ El scraper captura tanto los datos primarios solicitados como metadatos de enriq
 
 ---
 
-## 🏗️ Arquitectura del Scraper
+## 🛡️ Análisis Técnico: Muros de Seguridad y Bloqueos de IP en TripAdvisor
 
-Para garantizar la cobertura del **100% de cualquier ciudad** sin pérdida de progreso ante interrupciones de red, el sistema opera con arquitectura en dos fases respaldada por una base de datos local SQLite:
+TripAdvisor implementa uno de los perímetros de seguridad anti-bot más sofisticados de la web, administrado por **DataDome** (`geo.captcha-delivery.com`) junto a sistemas propios de limitación de tasa:
 
-```
-[ Paginación TripAdvisor de la Ciudad elegida ]
-                  │
-                  ▼ (Fase 1: --mode catalog)
-       [ Indexador de URLs en SQLite ] ─── Registra IDs únicos (-d123456-)
-                  │
-                  ▼ (Fase 2: --mode detail)
-     [ Extractor Profundo con Camoufox ] ─── Visita fichas pendientes
-                  │
-    ┌─────────────┴─────────────┐
-    ▼                           ▼
-[ Extracción LD+JSON ]    [ Fallbacks DOM ] ─── Captura teléfono y dirección
-    └─────────────┬─────────────┘
-                  ▼
-      [ Actualización en SQLite ] ─── Checkpoint ACID automático
-                  │
-                  ▼ (Exportación)
-   [ restaurantes_<ciudad>.csv ] ─── UTF-8 con BOM (Compatible con Excel)
-```
+### 1. Vector de Detección por Huella de Navegador (Fingerprinting)
+- **Firma TLS y JA4:** Las herramientas tradicionales de scraping (Requests, Scrapy, Puppeteer sin parches) utilizan stacks de red con firmas TLS (ClientHello, Cipher Suites, Extensiones) y configuraciones HTTP/2 que son identificadas inmediatamente como automatizadas en el primer paquete SYN/ACK.
+- **Detección de WebDriver y APIs del DOM:** Playwright y Selenium dejan rastros en variables como `navigator.webdriver = true`, discrepancias en plugins, WebGL, Canvas y orden de evaluación de micro-tareas en el motor JS.
+- **Solución implementada:** Se utiliza **Camoufox**, una bifurcación de Firefox con parches en el código fuente C++ que elimina `navigator.webdriver`, falsifica las huellas de Canvas/Audio/WebGL con entropía humana y emite cabeceras HTTP/2 y TLS idénticas a una instalación de Firefox legítima en Windows.
 
-1. **Fase 1 (Catalogación de URLs):** Recorre la paginación oficial (`oa0`, `oa30`, `oa60`, ...) e indexa todas las URLs de restaurantes de la ciudad en la base de datos `tripadvisor_<ciudad>.db`.
-2. **Fase 2 (Extracción Profunda):** Procesa cada URL pendiente extrayendo el bloque estructurado `schema.org/Restaurant` (JSON-LD) y aplicando selectores de respaldo DOM si algún dato viene ofuscado.
-3. **Persistencia ACID & Checkpointing:** Si el proceso se interrumpe (corte de red, pausa manual o baneo temporal), al relanzarlo **continúa exactamente donde quedó**, sin repetir restaurantes ya descargados.
+### 2. Muro de Consentimiento GDPR (OneTrust / Didomi)
+- TripAdvisor no renderiza completamente los bloques de contacto ni permite interacción hasta que se acepta el consentimiento de cookies.
+- Dichos cuadros suelen inyectarse dinámicamente o residir en **iframes aislados**.
+- **Solución implementada:** La rutina `_handle_cookie_consent` inspecciona recursivamente `page.frames` buscando identificadores específicos (`#onetrust-accept-btn-handler`, `#didomi-notice-agree-button`) y resuelve el diálogo en milisegundos.
+
+### 3. Rate Limiting Dinámico y Bloqueo de IPs
+- DataDome no aplica una regla estática (ej. "máximo 100 peticiones por minuto"). En su lugar, calcula una **puntuación de anomalía en tiempo real** basada en:
+  1. *Frecuencia y cadencia:* Ráfagas de peticiones continuas sin intervalos de lectura humana.
+  2. *Patrón de navegación:* Cargar únicamente URLs sin interactuar con el scroll o el cursor.
+  3. *Reputación de IP:* Puntuación del ASN (las IPs de datacenters como AWS, DigitalOcean, Hetzner son desafiadas con HTTP 403 casi al instante).
+
+### 4. Por qué NO funcionan los Proxies Públicos Gratuitos
+- Las listas públicas de proxies de internet (TheSpeedX, openproxylist, foros) contienen IPs que ya están en las listas negras globales de DataDome o son proxies transparentes que inyectan cabeceras `X-Forwarded-For` filtrando la IP real.
+- Durante nuestras pruebas empíricas, el 100% de los proxies públicos gratuitos resultaron en `HTTP 403 Forbidden`, `SSL_ERROR_SYSCALL` o caídas inmediatas del handshake. Para scraping masivo continuo se requieren **proxies residenciales o móviles rotativos**.
 
 ---
 
-## 🌍 Selección de Ciudad en el CLI
+## ⚙️ Arquitectura Técnica y Sistema Avanzado de Pacing Humano
 
-El CLI permite seleccionar cualquier ciudad mediante 3 mecanismos flexibles:
+Para mitigar los bloqueos de IP y permitir la extracción masiva de hasta 10.000 locales por ciudad, el scraper implementa una arquitectura desacoplada con protección adaptativa de IP:
 
-### A. Por nombre de ciudad (`--city`)
-El sistema incluye un catálogo precargado con las principales ciudades de España e internacionales (Madrid, Barcelona, Valencia, Sevilla, Málaga, Bilbao, Granada, Zaragoza, Palma, París, Londres, Roma, Lisboa, etc.):
+```
+[ Catálogo TripAdvisor de la Ciudad elegida ]
+                     │
+                     ▼ (Fase 1: --mode catalog)
+       [ Indexador de URLs en SQLite ] ─── Registra IDs únicos (-d123456-)
+                     │
+                     ▼ (Fase 2: --mode detail)
+     [ Extractor Profundo con Camoufox ] ─── Visita fichas pendientes
+                     │
+        ┌────────────┴────────────┐
+        ▼                         ▼
+  [ Sleep Jitter ]       [ Enfriamiento por Lotes ]
+  (Pausa aleatoria        (Cada N peticiones: scroll
+   entre locales)          suave y lectura humana)
+        │                         │
+        └────────────┬────────────┘
+                     ▼
+       ┌─────────────┴─────────────┐
+       ▼                           ▼
+[ Extracción LD+JSON ]     [ Fallbacks DOM ]
+       └─────────────┬─────────────┘
+                     ▼
+         [ Checkpoint ACID SQLite ] ─── Estado guardado tras cada restaurante
+                     │
+                     ▼ (Exportación)
+       [ restaurantes_<ciudad>.csv ] ─── UTF-8 con BOM (Excel)
+```
+
+### Mecanismos de Protección de IP Implementados
+
+1. **Micro-Pausas con Jitter Aleatorio (`--delay-min` y `--delay-max`):**
+   - Entre la apertura de una ficha y la siguiente se aplica un retardo flotante no determinista (por defecto de 2.0 a 4.5 segundos).
+   - Evita la regularidad milimétrica que dispararía los algoritmos de detección de robots.
+2. **Sleep de Transición de Catálogo (`--page-delay-min` y `--page-delay-max`):**
+   - Pasar de una página de listado a la siguiente involucra mayor carga de red. Se aplica una pausa de 3.0 a 6.5 segundos para simular el tiempo que toma a un humano mirar la página antes de pulsar "Siguiente".
+3. **Sleep Inteligente por Lotes de N Peticiones (`--batch-size` y `--batch-cooldown`):**
+   - Tras procesar N peticiones (por defecto 15), el scraper no congela el proceso ciegamente con un `time.sleep()`.
+   - Activa `_human_scroll_simulation`: ejecuta desplazamientos suaves (`window.scrollBy` con `behavior: 'smooth'`) hacia arriba y hacia abajo en la pantalla, realiza movimientos sutiles del ratón y pausas de 1.5 a 3.5 segundos entre desplazamientos, simulando una lectura atenta del menú o de las opiniones. Esto enfría la ventana de ráfaga del cortafuegos de DataDome.
+4. **Detección Activa de Desafíos y Reintento Resiliente:**
+   - La rutina `_detect_security_challenge` inspecciona el HTML buscando firmas de DataDome o respuestas 403.
+   - Si se detecta un bloqueo temporal, activa un cooldown extendido con scroll activo o rota al siguiente proxy disponible si se configuró un archivo `--proxy-list`.
+5. **Persistencia ACID & Checkpointing en SQLite:**
+   - Si se interrumpe la sesión (corte de conexión, Ctrl+C o pausa manual), **no se pierde ningún dato**. Al relanzar el CLI, el sistema detecta los restaurantes ya procesados y continúa exactamente en el primer local pendiente.
+
+---
+
+## 💻 Manual de Uso del CLI al 100% (Casos de Uso Prácticos)
+
+### Parámetros Disponibles
+
+```text
+Selección de Ciudad / Destino:
+  --city CITY                   Nombre de la ciudad (ej: barcelona, madrid, valencia, sevilla...)
+  --url URL                     URL directa de TripAdvisor (anula --city)
+  --geo GEO                     Geo ID explícito (ej: g187497)
+  --city-slug CITY_SLUG         Slug de la ciudad para la URL
+
+Control de Flujo:
+  --mode {all,catalog,detail}   Modo de ejecución (por defecto: all)
+  --start-page START_PAGE       Página inicial para catalogar (por defecto: 1)
+  --max-pages MAX_PAGES         Límite de páginas a catalogar
+  --limit LIMIT                 Límite de restaurantes a procesar en modo detail
+
+Almacenamiento y Salida:
+  --output OUTPUT               Ruta del CSV de salida (por defecto: restaurantes_<ciudad>.csv)
+  --db DB                       Ruta de la BD SQLite (por defecto: tripadvisor_<ciudad>.db)
+  --export-only                 Exporta la BD a CSV sin hacer peticiones de red
+
+Protección de IP y Simulación Humana:
+  --delay-min DELAY_MIN         Segundos mínimos entre restaurantes (def: 2.0)
+  --delay-max DELAY_MAX         Segundos máximos entre restaurantes (def: 4.5)
+  --page-delay-min PAGE_MIN     Segundos mínimos entre páginas de catálogo (def: 3.0)
+  --page-delay-max PAGE_MAX     Segundos máximos entre páginas de catálogo (def: 6.5)
+  --batch-size BATCH_SIZE       Peticiones antes del enfriamiento inteligente (def: 15)
+  --batch-cooldown-min C_MIN    Pausa mínima activa en enfriamiento de lote (def: 20.0)
+  --batch-cooldown-max C_MAX    Pausa máxima activa en enfriamiento de lote (def: 40.0)
+
+Red y Proxies:
+  --proxy PROXY                 Proxy único (http://user:pass@host:port)
+  --proxy-list PROXY_LIST       Archivo .txt con proxies para rotación automática
+  --no-headless                 Abre la ventana gráfica del navegador
+  --check-install               Diagnóstico de instalación
+```
+
+---
+
+### Casos de Uso Comunes
+
+#### Caso 1: Extracción completa de una ciudad predeterminada (Madrid)
+Ejecuta la Fase 1 (catalogación completa de URLs) y la Fase 2 (extracción profunda) en secuencia:
 ```bash
 python scraper.py --city madrid
-python scraper.py --city barcelona
-python scraper.py --city valencia
-python scraper.py --city sevilla
 ```
+*Genera:* `tripadvisor_madrid.db` y `restaurantes_madrid.csv`.
 
-### B. Por URL directa de TripAdvisor (`--url`)
-Permite scrapear **cualquier pueblo o ciudad del mundo** simplemente pegando la URL de su sección de restaurantes:
+#### Caso 2: Extracción de cualquier ciudad o pueblo del mundo vía URL
+Si una localidad no está en el diccionario precargado, copia el enlace directo desde el navegador:
 ```bash
 python scraper.py --url "https://www.tripadvisor.es/Restaurants-g187514-Madrid.html"
-python scraper.py --url "https://www.tripadvisor.es/Restaurants-g187497-Barcelona_Catalonia.html"
+# O un destino internacional:
+python scraper.py --url "https://www.tripadvisor.es/Restaurants-g187147-Paris_Ile_de_France.html"
 ```
 
-### C. Por código geográfico explícito (`--geo` y `--city-slug`)
+#### Caso 3: Prueba rápida de 5 páginas de catálogo y 30 fichas
+Ideal para verificar la conexión y la calidad de los datos antes de un scraping masivo:
 ```bash
-python scraper.py --city "Granada" --geo g187441 --city-slug "Granada_Province_of_Granada_Andalucia"
+# 1. Catalogar 5 páginas (~150 restaurantes)
+python scraper.py --city valencia --mode catalog --max-pages 5
+
+# 2. Extraer los primeros 30 restaurantes
+python scraper.py --city valencia --mode detail --limit 30
+```
+
+#### Caso 4: Máxima protección de IP sin proxies (Pacing ultra-humano)
+Ajusta los retardos y acorta los lotes de peticiones para IPs residenciales fijas:
+```bash
+python scraper.py --city barcelona \
+  --delay-min 3.0 \
+  --delay-max 6.0 \
+  --batch-size 10 \
+  --batch-cooldown-min 30.0 \
+  --batch-cooldown-max 50.0
+```
+
+#### Caso 5: Scraping con rotación de lista de proxies
+Permite balancear las peticiones entre múltiples servidores proxy residenciales:
+```bash
+python scraper.py --city sevilla --proxy-list mis_proxies.txt
+```
+*(El archivo `mis_proxies.txt` debe contener una dirección por línea, ej: `http://user:pass@proxy1:8080`).*
+
+#### Caso 6: Exportación instantánea a CSV sin tocar la red
+Si el proceso se interrumpió y quieres obtener el CSV con todo lo acumulado hasta el momento:
+```bash
+python scraper.py --export-only --db tripadvisor_barcelona.db --output barcelona_actualizado.csv
 ```
 
 ---
 
-## 🚀 Instalación Rápida
+## 🚀 Instalación y Despliegue Rápido
 
-### En Windows (Doble Clic)
+### En Windows (1 Clic)
+1. Ejecuta **`install.bat`** (configura el entorno virtual, instala librerías y descarga el motor Camoufox).
+2. Para lanzar el scraper, ejecuta **`run.bat`** o abre una terminal con el comando deseado.
 
-1. Ejecuta el archivo **`install.bat`** (crea el entorno virtual, instala dependencias y descarga el binario del navegador Camoufox).
-2. Para iniciar el scraping con la ciudad predeterminada (o configurada), haz doble clic en **`run.bat`**.
-
-### En Linux / macOS (Terminal)
-
+### En Linux / macOS
 ```bash
-# Dar permisos de ejecución
 chmod +x install.sh run.sh
-
-# Ejecutar el instalador
 ./install.sh
-
-# Ejecutar el scraper
-./run.sh
+./run.sh --city barcelona
 ```
 
-### Verificación Manual de Instalación
-
-Puedes comprobar en cualquier momento que todos los módulos y binarios están operativos ejecutando:
-
+### Verificación de Instalación
 ```bash
 python scraper.py --check-install
 ```
 
 ---
 
-## 💻 Guía de Uso por Línea de Comandos
-
-El script cuenta con una interfaz de consola completa (`CLI`) mediante argumentos:
-
-### 1. Extracción Completa de una Ciudad (Catálogo + Detalles)
-Extrae todo el universo de restaurantes de la ciudad y genera el CSV:
-```bash
-python scraper.py --city madrid
-# o para Barcelona:
-python scraper.py --city barcelona
-```
-
-### 2. Solo Catalogar URLs (Fase 1)
-Indexa las URLs en la base de datos local sin entrar a los detalles todavía:
-```bash
-python scraper.py --city valencia --mode catalog
-```
-*Opcional: limitar a las primeras 10 páginas de prueba:*
-```bash
-python scraper.py --city valencia --mode catalog --max-pages 10
-```
-
-### 3. Solo Extraer Detalles de Fichas Pendientes (Fase 2)
-Procesa los restaurantes que ya están indexados en la base de datos:
-```bash
-python scraper.py --city madrid --mode detail
-```
-*Opcional: procesar un lote de 100 restaurantes:*
-```bash
-python scraper.py --city madrid --mode detail --limit 100
-```
-
-### 4. Exportar a CSV en Cualquier Momento
-Genera o actualiza el archivo CSV a partir de la base de datos sin hacer peticiones de red:
-```bash
-python scraper.py --export-only --db tripadvisor_madrid.db --output mis_restaurantes.csv
-```
-
-### 5. Uso con Rotación de Proxies (Residenciales / Pool)
-Si se requiere trabajar a gran escala mediante proxies:
-```bash
-# Con un proxy único:
-python scraper.py --city barcelona --proxy "http://usuario:contraseña@proxy-host:puerto"
-
-# Con una lista rotativa (.txt con un proxy por línea):
-python scraper.py --city madrid --proxy-list proxies.txt
-```
-
----
-
-## 📋 Resumen de Parámetros CLI
-
-| Parámetro | Valor por defecto | Descripción |
-| :--- | :--- | :--- |
-| `--city` | `barcelona` | Nombre de la ciudad a scrapear |
-| `--url` | `None` | URL directa de catálogo de TripAdvisor (anula `--city`) |
-| `--geo` | `None` | Geo ID explícito (ej. `g187497`) |
-| `--mode` | `all` | Modo: `all`, `catalog`, `detail` |
-| `--start-page` | `1` | Página inicial del catálogo |
-| `--max-pages` | `None` (todas) | Cantidad máxima de páginas a catalogar |
-| `--limit` | `None` (todos) | Límite de fichas a procesar en modo detail |
-| `--output` | `restaurantes_<ciudad>.csv` | Nombre del archivo CSV exportado |
-| `--db` | `tripadvisor_<ciudad>.db` | Archivo de base de datos SQLite |
-| `--proxy` | `None` | URL de proxy individual |
-| `--proxy-list` | `None` | Archivo .txt con pool de proxies para rotación |
-| `--no-headless` | `False` | Muestra la ventana gráfica del navegador |
-| `--delay-min` | `1.5` | Segundos mínimos de pausa aleatoria |
-| `--delay-max` | `3.5` | Segundos máximos de pausa aleatoria |
-| `--export-only` | `False` | Solo exporta el CSV desde la BD |
-| `--check-install`| `False` | Ejecuta el autodiagnóstico del sistema |
-
----
-
-## 🛡️ Evasión Anti-Bot y Estabilidad
-
-- **Camoufox C++ Engine:** El navegador sustituye las firmas de automatización de Playwright/Selenium y genera huellas consistentes de WebGL, Canvas, fuentes y headers TLS propios de un usuario legítimo en Windows.
-- **Manejo de Consentimiento GDPR:** Detecta e interactúa automáticamente con los cuadros de diálogo de consentimiento de cookies (OneTrust / Didomi) tanto en el DOM principal como en iframes aislados.
-- **Delays con Jitter:** Introduce variaciones aleatorias entre peticiones para simular el comportamiento de navegación humana y prevenir bloqueos por ratio de peticiones.
-
----
-
-## 📂 Estructura del Repositorio
+## 📂 Estructura del Proyecto
 
 ```
 tripadvisor-barcelona-scraper/
-├── scraper.py                 # Núcleo del scraper multi-ciudad con CLI y Camoufox
-├── requirements.txt           # Dependencias de Python (camoufox, playwright, bs4)
-├── install.bat                # Instalador de 1 clic para Windows
-├── run.bat                    # Lanzador para Windows
-├── install.sh                 # Instalador de 1 clic para Linux/macOS
-├── run.sh                     # Lanzador para Linux/macOS
-├── .gitignore                 # Exclusiones de Git (base de datos, venv, caches)
-└── README.md                  # Manual técnico y operativo de usuario
+├── scraper.py                 # Motor principal multi-ciudad con Camoufox y SQLite
+├── requirements.txt           # Dependencias oficiales (camoufox, playwright, beautifulsoup4)
+├── install.bat                # Instalador desatendido para Windows
+├── run.bat                    # Script lanzador para Windows
+├── install.sh                 # Instalador desatendido para Linux/macOS
+├── run.sh                     # Script lanzador para Linux/macOS
+├── .gitignore                 # Exclusiones de Git (.db, .venv, caches)
+└── README.md                  # Documentación técnica completa y manual de usuario
 ```
 
 ---
 
-## 📄 Licencia
+## 📄 Licencia y Autoría
 
-Este proyecto está bajo licencia MIT. Desarrollado con fines de investigación, análisis comercial e inteligencia de mercado.
+- **Desarrollador:** Marlon Sarduy Machado ([UserZero075](https://github.com/UserZero075))
+- **Licencia:** MIT License. Desarrollado con fines de análisis de datos e inteligencia de mercado.

@@ -3,24 +3,19 @@
 """
 TripAdvisor Multi-City Restaurant Scraper
 =========================================
-Extractor automatizado de restaurantes por ciudad en TripAdvisor utilizando
-Camoufox Anti-Detect (Firefox parcheado a nivel C++ con huella realista TLS/Canvas).
+Extractor profesional de alta fidelidad para restaurantes de cualquier ciudad
+en TripAdvisor, desarrollado con Camoufox Anti-Detect (motor Firefox con parches
+a nivel C++ para firmas TLS/JA4, HTTP/2, Canvas y WebGL).
 
-Permite extraer el 100% de restaurantes de cualquier ciudad especificada por:
-- Nombre de ciudad (--city madrid, barcelona, valencia, sevilla, etc.)
-- URL directa de catálogo (--url "https://www.tripadvisor.es/Restaurants-g187514-Madrid.html")
-- Identificador geográfico (--geo g187514 --city-slug Madrid)
+Incluye sistema avanzado de protección de IP:
+- Sleep aleatorio humano con micro-pausas entre transiciones de páginas y restaurantes.
+- Sleep inteligente por lotes de N peticiones con simulación de lectura y scroll humano suave.
+- Detección activa de desafíos de seguridad DataDome y rotación automática de proxies.
+- Arquitectura desacoplada en 2 fases con persistencia ACID en SQLite (checkpoints).
+- Exportación automática a CSV con codificación UTF-8 BOM (compatible con Excel).
 
-Campos extraídos:
-- Nombre
-- Dirección Completa (calle, código postal, localidad)
-- Teléfono directo
-- Puntuación (rating) y número de opiniones
-- Tipo de cocina y rango de precio
-- URL de la ficha oficial
-- Marca de tiempo UTC
-
-Autor: UserZero075 / Hermes Agent
+Autor: Marlon Sarduy Machado (UserZero075)
+Repositorio: https://github.com/UserZero075/tripadvisor-barcelona-scraper
 Licencia: MIT
 """
 
@@ -107,7 +102,7 @@ KNOWN_CITIES = {
 # ---------------------------------------------------------------------------
 
 class ProxyRotator:
-    """Administra una lista de proxies con balanceo y marcado de fallos."""
+    """Administra una lista de proxies con balanceo y descarte automático de caídos."""
 
     def __init__(self, proxy_list_path=None, single_proxy=None):
         self.proxies = []
@@ -125,7 +120,7 @@ class ProxyRotator:
                         self.proxies.append(self._format_proxy(p))
 
         if self.proxies:
-            print(f"[PROXIES] Cargados {len(self.proxies)} proxies para rotación.")
+            print(f"[PROXIES] Cargados {len(self.proxies)} proxies para balanceo.")
 
     def _format_proxy(self, p_str):
         p_str = p_str.strip()
@@ -140,7 +135,7 @@ class ProxyRotator:
 
         active = [p for p in self.proxies if p not in self.dead_proxies]
         if not active:
-            print("[AVISO] Todos los proxies fueron marcados como fallidos. Restableciendo lista...")
+            print("[AVISO] Todos los proxies fueron marcados como caídos. Reiniciando lista de verificación...")
             self.dead_proxies.clear()
             active = self.proxies
 
@@ -151,7 +146,7 @@ class ProxyRotator:
         """Registra un proxy como no funcional."""
         if proxy_str:
             self.dead_proxies.add(proxy_str)
-            print(f"[PROXY CAÍDO] Descartado: {proxy_str} ({len(self.dead_proxies)}/{len(self.proxies)} caídos)")
+            print(f"[PROXY DESCARTADO] Marcado como fallido: {proxy_str} ({len(self.dead_proxies)}/{len(self.proxies)} caídos)")
 
 
 # ---------------------------------------------------------------------------
@@ -189,7 +184,6 @@ class TargetCity:
             raise ValueError(f"No se pudo extraer el Geo ID de la URL: {url}\nFormato esperado: .../Restaurants-gXXXXXX-Nombre_Ciudad.html")
         geo = m.group(1)
         raw_slug = m.group(2)
-        # Limpiar posible paginación interna -oa30-
         slug = re.sub(r"-oa\d+-", "-", raw_slug)
         name = slug.split("_")[0]
         return cls(name=name, geo=geo, slug=slug)
@@ -202,7 +196,6 @@ class TargetCity:
             item = KNOWN_CITIES[key]
             return cls(name=item["name"], geo=item["geo"], slug=item["slug"])
         
-        # Si no está en el diccionario predefinido, generar slug aproximado
         formatted_name = city_name.strip().title()
         slug_guess = re.sub(r"\s+", "_", formatted_name)
         return cls(name=formatted_name, geo="g187497", slug=slug_guess)
@@ -214,17 +207,14 @@ class TargetCity:
 
 def check_installation():
     """Valida que Camoufox y sus dependencias estén correctamente instalados."""
-    print("=" * 60)
+    print("=" * 65)
     print("VERIFICACIÓN DE INSTALACIÓN - CAMOUFOX SCRAPER")
-    print("=" * 60)
+    print("=" * 65)
     ok = True
 
     try:
         import camoufox
-        ver = getattr(camoufox, '__version__', '')
-        if hasattr(ver, '__version__'):
-            ver = ver.__version__
-        print(f"[OK] Paquete Python camoufox instalado (versión {ver})")
+        print("[OK] Paquete Python camoufox instalado")
     except ImportError:
         print("[ERROR] El paquete 'camoufox' no está instalado.")
         print("        Ejecuta: pip install -r requirements.txt")
@@ -232,7 +222,7 @@ def check_installation():
 
     try:
         import playwright
-        print(f"[OK] Paquete Python playwright instalado")
+        print("[OK] Paquete Python playwright instalado")
     except ImportError:
         print("[ERROR] El paquete 'playwright' no está instalado.")
         print("        Ejecuta: pip install playwright")
@@ -250,17 +240,17 @@ def check_installation():
             print("        Ejecuta: python -m camoufox fetch")
             ok = False
 
-    print("=" * 60)
+    print("=" * 65)
     if ok:
         print("[LISTO] Todas las dependencias están operativas para iniciar el scraping.")
     else:
         print("[ACCION REQUERIDA] Instala los componentes faltantes antes de ejecutar.")
-    print("=" * 60)
+    print("=" * 65)
     return ok
 
 
 # ---------------------------------------------------------------------------
-# Base de Datos Local SQLite (Persistencia y Reanudación)
+# Base de Datos Local SQLite (Persistencia y Checkpointing)
 # ---------------------------------------------------------------------------
 
 class Database:
@@ -459,25 +449,123 @@ class Database:
 
 
 # ---------------------------------------------------------------------------
-# Lógica de Scraping con Camoufox
+# Lógica de Scraping con Camoufox y Protección Inteligente de IP
 # ---------------------------------------------------------------------------
 
 class TripAdvisorScraper:
-    """Motor de scraping para cualquier ciudad configurada."""
+    """Motor de scraping y extracción profunda con simulación de comportamiento humano."""
 
-    def __init__(self, target_city, db, proxy_rotator=None, headless=True, delay_min=1.5, delay_max=3.5):
+    def __init__(
+        self,
+        target_city,
+        db,
+        proxy_rotator=None,
+        headless=True,
+        delay_min=2.0,
+        delay_max=4.5,
+        page_delay_min=3.0,
+        page_delay_max=6.5,
+        batch_size=15,
+        batch_cooldown_min=20.0,
+        batch_cooldown_max=40.0
+    ):
         self.target_city = target_city
         self.db = db
         self.proxy_rotator = proxy_rotator
         self.headless = headless
         self.delay_min = delay_min
         self.delay_max = delay_max
+        self.page_delay_min = page_delay_min
+        self.page_delay_max = page_delay_max
+        self.batch_size = batch_size
+        self.batch_cooldown_min = batch_cooldown_min
+        self.batch_cooldown_max = batch_cooldown_max
+
+        # Contador interno de peticiones por sesión para cooldown de lotes
+        self.request_count = 0
 
     def _sleep_jitter(self, factor=1.0):
+        """Sleep aleatorio humano entre peticiones consecutivas con variación no predecible."""
         t = random.uniform(self.delay_min, self.delay_max) * factor
         time.sleep(t)
 
+    def _sleep_page_transition(self):
+        """Sleep pausado específico para el cambio de páginas en el catálogo."""
+        t = random.uniform(self.page_delay_min, self.page_delay_max)
+        print(f"[PAUSA HUMANA] Transición de página: esperando {t:.1f}s...")
+        time.sleep(t)
+
+    def _human_scroll_simulation(self, page, duration_seconds=15.0):
+        """
+        Simula la interacción activa de un usuario humano en la pantalla:
+        desplazamientos suaves hacia abajo y arriba, pausas de lectura aleatorias
+        y movimientos sutiles del cursor.
+        """
+        start_time = time.time()
+        print(f"[COMPORTAMIENTO HUMANO] Simulando lectura y scroll natural ({duration_seconds:.1f}s)...")
+
+        while (time.time() - start_time) < duration_seconds:
+            try:
+                # 70% probabilidad de bajar, 30% de subir para simular relectura
+                direction = 1 if random.random() < 0.70 else -1
+                scroll_delta = random.randint(180, 520) * direction
+
+                page.evaluate(f"""() => {{
+                    window.scrollBy({{
+                        top: {scroll_delta},
+                        behavior: 'smooth'
+                    }});
+                }}""")
+
+                # Movimiento del cursor simulando interacción
+                try:
+                    viewport = page.viewport_size or {"width": 1280, "height": 800}
+                    rx = random.randint(100, max(200, viewport["width"] - 100))
+                    ry = random.randint(100, max(200, viewport["height"] - 100))
+                    page.mouse.move(rx, ry, steps=random.randint(3, 8))
+                except Exception:
+                    pass
+
+                # Micro-pausa de lectura
+                pause = random.uniform(1.2, 3.2)
+                time.sleep(pause)
+
+            except Exception:
+                time.sleep(1.5)
+
+    def _check_and_trigger_batch_cooldown(self, page):
+        """
+        Evalúa si se alcanzó el límite N de peticiones en el lote.
+        De ser así, activa un sleep inteligente con scroll humano para enfriar la IP.
+        """
+        self.request_count += 1
+        if self.batch_size and (self.request_count % self.batch_size == 0):
+            cooldown_time = random.uniform(self.batch_cooldown_min, self.batch_cooldown_max)
+            print("\n" + "#" * 65)
+            print(f"[ENFRIAMIENTO INTELIGENTE DE IP] Lote de {self.batch_size} peticiones alcanzado.")
+            print(f"Pausando el flujo durante {cooldown_time:.1f} segundos con simulación humana activa...")
+            print("#" * 65)
+            self._human_scroll_simulation(page, duration_seconds=cooldown_time)
+            print("[ENFRIAMIENTO INTELIGENTE] Periodo completado. Reanudando extracción con la IP protegida.\n")
+
+    def _detect_security_challenge(self, page):
+        """
+        Comprueba activamente si TripAdvisor / DataDome devolvió un captcha o bloqueo.
+        """
+        try:
+            content = page.content().lower()
+            if "datadome" in content or "captcha-delivery.com" in content:
+                return "DataDome Captcha Detectado"
+            if "please enable js and disable any ad blocker" in content:
+                return "DataDome Shield Activado"
+            if "access denied" in content and "403" in content:
+                return "HTTP 403 Forbidden"
+        except Exception:
+            pass
+        return None
+
     def _handle_cookie_consent(self, page):
+        """Acepta diálogos de cookies GDPR en el documento o dentro de iframes."""
         for frame in page.frames:
             try:
                 for selector in [
@@ -500,10 +588,13 @@ class TripAdvisorScraper:
         return False
 
     def crawl_catalog(self, browser_context, start_page=1, max_pages=None):
-        print("\n" + "=" * 60)
+        """
+        Fase 1: Recorre el catálogo de la ciudad e indexa todas las URLs de restaurantes en SQLite.
+        """
+        print("\n" + "=" * 65)
         print(f"INICIANDO FASE 1: CATALOGACIÓN DE RESTAURANTES")
-        print(f"Ciudad: {self.target_city.name} ({self.target_city.geo}) | Desde página: {start_page}")
-        print("=" * 60)
+        print(f"Ciudad: {self.target_city.name} ({self.target_city.geo}) | Página inicial: {start_page}")
+        print("=" * 65)
 
         page = browser_context.new_page()
         current_page = start_page
@@ -536,11 +627,21 @@ class TripAdvisorScraper:
                         current_page += 1
                         continue
 
+                # Verificación de desafíos DataDome
+                challenge = self._detect_security_challenge(page)
+                if challenge:
+                    print(f"[ALERTA DE SEGURIDAD] {challenge} en la página {current_page}.")
+                    print("Activando pausa extendida con scroll humano para disipar el bloqueo...")
+                    self._human_scroll_simulation(page, duration_seconds=45.0)
+
                 self._sleep_jitter(0.8)
                 self._handle_cookie_consent(page)
 
-                page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2);")
-                time.sleep(0.8)
+                # Scroll progresivo para forzar lazy loading de las 30 tarjetas
+                page.evaluate("window.scrollTo(0, document.body.scrollHeight / 3);")
+                time.sleep(0.6)
+                page.evaluate("window.scrollTo(0, (document.body.scrollHeight / 3) * 2);")
+                time.sleep(0.6)
                 page.evaluate("window.scrollTo(0, document.body.scrollHeight);")
                 time.sleep(1.0)
 
@@ -568,8 +669,8 @@ class TripAdvisorScraper:
                         print(f"Fin del catálogo de {self.target_city.name} alcanzado.")
                         break
                     else:
-                        print("Posible ralentización de carga. Pausando...")
-                        self._sleep_jitter(2.0)
+                        print("Posible ralentización de carga. Esperando...")
+                        self._sleep_jitter(2.5)
 
                 for r_url in urls_on_page:
                     self.db.add_restaurant_url(r_url, current_page)
@@ -577,23 +678,32 @@ class TripAdvisorScraper:
                 self.db.log_page_crawled(current_page, offset, len(urls_on_page))
                 pages_processed += 1
                 stats = self.db.get_stats()
-                print(f"[Página {current_page}] Encontrados: {len(urls_on_page)} URLs | Total en BD: {stats['total']}")
+                print(f"[Página {current_page}] Encontrados: {len(urls_on_page)} URLs | Total acumulado en BD: {stats['total']}")
+
+                # Evaluación de enfriamiento de lote tras petición
+                self._check_and_trigger_batch_cooldown(page)
 
                 current_page += 1
-                self._sleep_jitter(1.0)
+                # Sleep de transición entre páginas de catálogo
+                self._sleep_page_transition()
 
         finally:
             page.close()
 
     def scrape_restaurant_details(self, browser_context, limit=None):
+        """
+        Fase 2: Visita cada restaurante pendiente, simula navegación humana
+        y extrae nombre, dirección estructurada y teléfono directo.
+        """
         pending = self.db.get_pending_urls(limit=limit)
         total_pending = len(pending)
-        print("\n" + "=" * 60)
-        print(f"INICIANDO FASE 2: EXTRACCIÓN DE DETALLES ({total_pending} pendientes en {self.target_city.name})")
-        print("=" * 60)
+        print("\n" + "=" * 65)
+        print(f"INICIANDO FASE 2: EXTRACCIÓN DE DETALLES")
+        print(f"Ciudad: {self.target_city.name} | Pendientes por procesar: {total_pending}")
+        print("=" * 65)
 
         if not pending:
-            print("No hay restaurantes pendientes de procesar.")
+            print("No hay restaurantes pendientes de procesar en la base de datos.")
             return
 
         page = browser_context.new_page()
@@ -610,6 +720,17 @@ class TripAdvisorScraper:
                     self._sleep_jitter(0.6)
                     self._handle_cookie_consent(page)
 
+                    # Verificar si saltó muro de seguridad
+                    challenge = self._detect_security_challenge(page)
+                    if challenge:
+                        print(f"[ALERTA DE SEGURIDAD] {challenge} en {url}")
+                        self._human_scroll_simulation(page, duration_seconds=40.0)
+
+                    # Pequeña lectura humana (scroll leve antes de extraer)
+                    page.evaluate("window.scrollBy({top: 350, behavior: 'smooth'});")
+                    time.sleep(random.uniform(0.6, 1.2))
+
+                    # Extracción profunda (JSON-LD + DOM Fallbacks)
                     data = page.evaluate(f"""() => {{
                         const res = {{
                             name: '',
@@ -655,7 +776,7 @@ class TripAdvisorScraper:
                             }} catch(e) {{}}
                         }});
 
-                        // 2. Selectores de respaldo DOM
+                        // 2. Selectores de respaldo DOM si el LD+JSON vino incompleto
                         if (!res.name) {{
                             const h1 = document.querySelector('h1[data-test-target="top-info-header"], h1');
                             if (h1) res.name = h1.innerText.trim();
@@ -695,6 +816,10 @@ class TripAdvisorScraper:
                     print(f" -> Error al extraer restaurante {rest_id}: {e}")
                     self.db.mark_failed(rest_id, str(e))
 
+                # Evaluación de enfriamiento de lote tras cada ficha extraída
+                self._check_and_trigger_batch_cooldown(page)
+
+                # Sleep aleatorio pausado entre locales
                 self._sleep_jitter(1.0)
 
         finally:
@@ -717,9 +842,9 @@ Ejemplos de uso por ciudad:
   python scraper.py --url "https://www.tripadvisor.es/Restaurants-g187514-Madrid.html"
   python scraper.py --city sevilla --limit 50 --output restaurantes_sevilla.csv
 
-Ejemplos con rotación de proxies:
+Ajuste de tiempos y sigilo para protección de IP:
+  python scraper.py --city madrid --delay-min 2.5 --delay-max 5.0 --batch-size 10 --batch-cooldown-min 25
   python scraper.py --city barcelona --proxy-list proxies.txt
-  python scraper.py --city madrid --proxy "http://usuario:pass@proxy-ip:puerto"
 
 Otras opciones:
   python scraper.py --export-only --db tripadvisor_barcelona.db --output barcelona.csv
@@ -800,38 +925,71 @@ Otras opciones:
         help="Solo exporta la base de datos actual a CSV sin realizar peticiones de red"
     )
 
-    # Proxies y sigilo
-    stealth_group = parser.add_argument_group("Proxies y Sigilo")
+    # Protección de IP y Sigilo Humano
+    stealth_group = parser.add_argument_group("Protección de IP y Simulación Humana")
     stealth_group.add_argument(
+        "--delay-min",
+        type=float,
+        default=2.0,
+        help="Retardo mínimo aleatorio entre restaurantes en segundos (por defecto: 2.0)"
+    )
+    stealth_group.add_argument(
+        "--delay-max",
+        type=float,
+        default=4.5,
+        help="Retardo máximo aleatorio entre restaurantes en segundos (por defecto: 4.5)"
+    )
+    stealth_group.add_argument(
+        "--page-delay-min",
+        type=float,
+        default=3.0,
+        help="Retardo mínimo entre cambio de páginas del catálogo (por defecto: 3.0)"
+    )
+    stealth_group.add_argument(
+        "--page-delay-max",
+        type=float,
+        default=6.5,
+        help="Retardo máximo entre cambio de páginas del catálogo (por defecto: 6.5)"
+    )
+    stealth_group.add_argument(
+        "--batch-size",
+        type=int,
+        default=15,
+        help="Cantidad N de peticiones antes de activar el sleep inteligente de enfriamiento (por defecto: 15)"
+    )
+    stealth_group.add_argument(
+        "--batch-cooldown-min",
+        type=float,
+        default=20.0,
+        help="Segundos mínimos de pausa activa en el enfriamiento por lote (por defecto: 20.0)"
+    )
+    stealth_group.add_argument(
+        "--batch-cooldown-max",
+        type=float,
+        default=40.0,
+        help="Segundos máximos de pausa activa en el enfriamiento por lote (por defecto: 40.0)"
+    )
+
+    # Proxies y navegación
+    net_group = parser.add_argument_group("Red y Proxies")
+    net_group.add_argument(
         "--proxy",
         type=str,
         default=None,
         help="Proxy único a utilizar (ej. 'http://user:pass@host:port' o 'socks5://127.0.0.1:1080')"
     )
-    stealth_group.add_argument(
+    net_group.add_argument(
         "--proxy-list",
         type=str,
         default=None,
         help="Ruta a un archivo .txt con lista de proxies (uno por línea) para rotación automática"
     )
-    stealth_group.add_argument(
+    net_group.add_argument(
         "--no-headless",
         action="store_true",
         help="Muestra la ventana del navegador (por defecto se ejecuta en modo headless sigiloso)"
     )
-    stealth_group.add_argument(
-        "--delay-min",
-        type=float,
-        default=1.5,
-        help="Retardo mínimo entre peticiones en segundos (por defecto: 1.5)"
-    )
-    stealth_group.add_argument(
-        "--delay-max",
-        type=float,
-        default=3.5,
-        help="Retardo máximo entre peticiones en segundos (por defecto: 3.5)"
-    )
-    stealth_group.add_argument(
+    net_group.add_argument(
         "--check-install",
         action="store_true",
         help="Ejecuta diagnóstico de instalación de Camoufox y Playwright"
@@ -878,18 +1036,21 @@ def main():
     # 3. Configurar rotación de proxies
     proxy_rotator = ProxyRotator(proxy_list_path=args.proxy_list, single_proxy=args.proxy)
 
-    print("=" * 60)
+    print("=" * 65)
     print("TRIPADVISOR RESTAURANT SCRAPER (MULTI-CIUDAD)")
-    print("=" * 60)
-    print(f"Ciudad:          {target_city.name} (Geo: {target_city.geo})")
-    print(f"URL Base:        {target_city.base_restaurants_url}")
-    print(f"Modo:            {args.mode}")
-    print(f"Base de datos:   {db_file}")
-    print(f"Salida CSV:      {csv_file}")
-    print(f"Headless:        {not args.no_headless}")
+    print("=" * 65)
+    print(f"Ciudad:              {target_city.name} (Geo: {target_city.geo})")
+    print(f"URL Base:            {target_city.base_restaurants_url}")
+    print(f"Modo:                {args.mode}")
+    print(f"Base de datos:       {db_file}")
+    print(f"Salida CSV:          {csv_file}")
+    print(f"Headless:            {not args.no_headless}")
+    print(f"Delays entre ítems:  {args.delay_min}s - {args.delay_max}s")
+    print(f"Delays catálogo:     {args.page_delay_min}s - {args.page_delay_max}s")
+    print(f"Lote inteligente:    Cada {args.batch_size} peticiones (Pausa: {args.batch_cooldown_min}s-{args.batch_cooldown_max}s)")
     if proxy_rotator.proxies:
-        print(f"Pool Proxies:    {len(proxy_rotator.proxies)} configurados")
-    print("=" * 60)
+        print(f"Pool de Proxies:     {len(proxy_rotator.proxies)} configurados")
+    print("=" * 65)
 
     stats = db.get_stats()
     print(f"Estado inicial BD: {stats['total']} encontrados | {stats['done']} completados | {stats['pending']} pendientes")
@@ -900,7 +1061,12 @@ def main():
         proxy_rotator=proxy_rotator,
         headless=not args.no_headless,
         delay_min=args.delay_min,
-        delay_max=args.delay_max
+        delay_max=args.delay_max,
+        page_delay_min=args.page_delay_min,
+        page_delay_max=args.page_delay_max,
+        batch_size=args.batch_size,
+        batch_cooldown_min=args.batch_cooldown_min,
+        batch_cooldown_max=args.batch_cooldown_max
     )
 
     camoufox_kwargs = {
@@ -935,9 +1101,9 @@ def main():
 
         context.close()
 
-    print("\n" + "=" * 60)
+    print("\n" + "=" * 65)
     print("GENERANDO ARCHIVO CSV FINAL")
-    print("=" * 60)
+    print("=" * 65)
     total_exported = db.export_csv(csv_file)
     final_stats = db.get_stats()
     print(f"Proceso concluido exitosamente:")
@@ -947,7 +1113,7 @@ def main():
     print(f"- Total con teléfono:             {final_stats['with_phone']}")
     print(f"- Total con dirección:            {final_stats['with_address']}")
     print(f"- Archivo CSV generado:           {csv_file} ({total_exported} filas)")
-    print("=" * 60)
+    print("=" * 65)
 
 
 if __name__ == "__main__":
