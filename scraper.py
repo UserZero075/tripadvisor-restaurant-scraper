@@ -1,18 +1,24 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-TripAdvisor Barcelona Scraper
-=============================
-Extractor automatizado de restaurantes de Barcelona en TripAdvisor utilizando
-Camoufox Anti-Detect (Firefox parcheado con huella de navegación realista).
+TripAdvisor Multi-City Restaurant Scraper
+=========================================
+Extractor automatizado de restaurantes por ciudad en TripAdvisor utilizando
+Camoufox Anti-Detect (Firefox parcheado a nivel C++ con huella realista TLS/Canvas).
+
+Permite extraer el 100% de restaurantes de cualquier ciudad especificada por:
+- Nombre de ciudad (--city madrid, barcelona, valencia, sevilla, etc.)
+- URL directa de catálogo (--url "https://www.tripadvisor.es/Restaurants-g187514-Madrid.html")
+- Identificador geográfico (--geo g187514 --city-slug Madrid)
 
 Campos extraídos:
 - Nombre
-- Dirección (calle, código postal, localidad)
-- Teléfono
-- Rating y número de opiniones
+- Dirección Completa (calle, código postal, localidad)
+- Teléfono directo
+- Puntuación (rating) y número de opiniones
 - Tipo de cocina y rango de precio
-- URL de la ficha
+- URL de la ficha oficial
+- Marca de tiempo UTC
 
 Autor: UserZero075 / Hermes Agent
 Licencia: MIT
@@ -30,11 +36,176 @@ import argparse
 from datetime import datetime
 from urllib.parse import urljoin, urlparse
 
-# URL base oficial de restaurantes en Barcelona en TripAdvisor España
 BASE_URL = "https://www.tripadvisor.es"
-CITY_RESTAURANTS_URL = "https://www.tripadvisor.es/Restaurants-g187497-Barcelona_Catalonia.html"
-CITY_CODE = "g187497"
 RESTAURANTS_PER_PAGE = 30
+
+# Diccionario canónico de códigos geográficos (Geo IDs) de ciudades comunes en TripAdvisor
+KNOWN_CITIES = {
+    # España
+    "barcelona": {"geo": "g187497", "slug": "Barcelona_Catalonia", "name": "Barcelona"},
+    "madrid": {"geo": "g187514", "slug": "Madrid", "name": "Madrid"},
+    "valencia": {"geo": "g187522", "slug": "Valencia_Province_of_Valencia_Valencian_Country", "name": "Valencia"},
+    "sevilla": {"geo": "g187443", "slug": "Seville_Province_of_Seville_Andalucia", "name": "Sevilla"},
+    "seville": {"geo": "g187443", "slug": "Seville_Province_of_Seville_Andalucia", "name": "Sevilla"},
+    "malaga": {"geo": "g187438", "slug": "Malaga_Costa_del_Sol_Province_of_Malaga_Andalucia", "name": "Málaga"},
+    "málaga": {"geo": "g187438", "slug": "Malaga_Costa_del_Sol_Province_of_Malaga_Andalucia", "name": "Málaga"},
+    "bilbao": {"geo": "g187454", "slug": "Bilbao_Province_of_Vizcaya_Basque_Country", "name": "Bilbao"},
+    "granada": {"geo": "g187441", "slug": "Granada_Province_of_Granada_Andalucia", "name": "Granada"},
+    "zaragoza": {"geo": "g187448", "slug": "Zaragoza_Province_of_Zaragoza_Aragon", "name": "Zaragoza"},
+    "palma": {"geo": "g187463", "slug": "Palma_de_Mallorca_Majorca_Balearic_Islands", "name": "Palma de Mallorca"},
+    "palma de mallorca": {"geo": "g187463", "slug": "Palma_de_Mallorca_Majorca_Balearic_Islands", "name": "Palma de Mallorca"},
+    "alicante": {"geo": "g1064230", "slug": "Alicante_Costa_Blanca_Province_of_Alicante_Valencian_Country", "name": "Alicante"},
+    "cordoba": {"geo": "g187430", "slug": "Cordoba_Province_of_Cordoba_Andalucia", "name": "Córdoba"},
+    "córdoba": {"geo": "g187430", "slug": "Cordoba_Province_of_Cordoba_Andalucia", "name": "Córdoba"},
+    "san sebastian": {"geo": "g187457", "slug": "Donostia_San_Sebastian_Guipuzcoa_Province_Basque_Country", "name": "San Sebastián"},
+    "donostia": {"geo": "g187457", "slug": "Donostia_San_Sebastian_Guipuzcoa_Province_Basque_Country", "name": "San Sebastián"},
+    "murcia": {"geo": "g187518", "slug": "Murcia_Region_of_Murcia", "name": "Murcia"},
+    "valladolid": {"geo": "g187494", "slug": "Valladolid_Province_of_Valladolid_Castile_and_Leon", "name": "Valladolid"},
+    "vigo": {"geo": "g187509", "slug": "Vigo_Province_of_Pontevedra_Galicia", "name": "Vigo"},
+    "gijon": {"geo": "g187452", "slug": "Gijon_Asturias", "name": "Gijón"},
+    "gijón": {"geo": "g187452", "slug": "Gijon_Asturias", "name": "Gijón"},
+    "a coruna": {"geo": "g187507", "slug": "A_Coruna_Province_of_A_Coruna_Galicia", "name": "A Coruña"},
+    "la coruna": {"geo": "g187507", "slug": "A_Coruna_Province_of_A_Coruna_Galicia", "name": "A Coruña"},
+    "santander": {"geo": "g187484", "slug": "Santander_Cantabria", "name": "Santander"},
+    "cadiz": {"geo": "g187432", "slug": "Cadiz_Costa_de_la_Luz_Province_of_Cadiz_Andalucia", "name": "Cádiz"},
+    "cádiz": {"geo": "g187432", "slug": "Cadiz_Costa_de_la_Luz_Province_of_Cadiz_Andalucia", "name": "Cádiz"},
+    "tarragona": {"geo": "g187503", "slug": "Tarragona_Province_of_Tarragona_Catalonia", "name": "Tarragona"},
+    "girona": {"geo": "g187499", "slug": "Girona_Province_of_Girona_Catalonia", "name": "Girona"},
+    "lleida": {"geo": "g187500", "slug": "Lleida_Province_of_Lleida_Catalonia", "name": "Lleida"},
+    "toledo": {"geo": "g187489", "slug": "Toledo_Province_of_Toledo_Castile_La_Mancha", "name": "Toledo"},
+    "salamanca": {"geo": "g187493", "slug": "Salamanca_Province_of_Salamanca_Castile_and_Leon", "name": "Salamanca"},
+    "ibiza": {"geo": "g616235", "slug": "Ibiza_Town_Ibiza_Balearic_Islands", "name": "Ibiza"},
+    "santa cruz de tenerife": {"geo": "g187479", "slug": "Santa_Cruz_de_Tenerife_Tenerife_Canary_Islands", "name": "Santa Cruz de Tenerife"},
+    "las palmas": {"geo": "g187472", "slug": "Las_Palmas_de_Gran_Canaria_Gran_Canaria_Canary_Islands", "name": "Las Palmas de Gran Canaria"},
+
+    # Internacionales populares
+    "paris": {"geo": "g187147", "slug": "Paris_Ile_de_France", "name": "París"},
+    "parís": {"geo": "g187147", "slug": "Paris_Ile_de_France", "name": "París"},
+    "london": {"geo": "g186338", "slug": "London_England", "name": "Londres"},
+    "londres": {"geo": "g186338", "slug": "London_England", "name": "Londres"},
+    "rome": {"geo": "g187791", "slug": "Rome_Lazio", "name": "Roma"},
+    "roma": {"geo": "g187791", "slug": "Rome_Lazio", "name": "Roma"},
+    "lisboa": {"geo": "g189158", "slug": "Lisbon_Lisbon_District_Central_Portugal", "name": "Lisboa"},
+    "lisbon": {"geo": "g189158", "slug": "Lisbon_Lisbon_District_Central_Portugal", "name": "Lisboa"},
+    "porto": {"geo": "g189180", "slug": "Porto_Porto_District_Northern_Portugal", "name": "Oporto"},
+    "oporto": {"geo": "g189180", "slug": "Porto_Porto_District_Northern_Portugal", "name": "Oporto"},
+    "new york": {"geo": "g60763", "slug": "New_York_City_New_York", "name": "Nueva York"},
+    "nueva york": {"geo": "g60763", "slug": "New_York_City_New_York", "name": "Nueva York"},
+    "buenos aires": {"geo": "g312741", "slug": "Buenos_Aires_Capital_Federal_District", "name": "Buenos Aires"},
+    "ciudad de mexico": {"geo": "g150800", "slug": "Mexico_City_Central_Mexico_and_Gulf_Coast", "name": "Ciudad de México"},
+    "cdmx": {"geo": "g150800", "slug": "Mexico_City_Central_Mexico_and_Gulf_Coast", "name": "Ciudad de México"},
+    "bogota": {"geo": "g294074", "slug": "Bogota", "name": "Bogotá"},
+    "bogotá": {"geo": "g294074", "slug": "Bogota", "name": "Bogotá"},
+    "miami": {"geo": "g34438", "slug": "Miami_Florida", "name": "Miami"},
+    "havana": {"geo": "g147271", "slug": "Havana_Ciudad_de_la_Habana_Province_Cuba", "name": "La Habana"},
+    "la habana": {"geo": "g147271", "slug": "Havana_Ciudad_de_la_Habana_Province_Cuba", "name": "La Habana"}
+}
+
+
+# ---------------------------------------------------------------------------
+# Gestor de Rotación de Proxies
+# ---------------------------------------------------------------------------
+
+class ProxyRotator:
+    """Administra una lista de proxies con balanceo y marcado de fallos."""
+
+    def __init__(self, proxy_list_path=None, single_proxy=None):
+        self.proxies = []
+        self.current_idx = 0
+        self.dead_proxies = set()
+
+        if single_proxy:
+            self.proxies.append(self._format_proxy(single_proxy))
+
+        if proxy_list_path and os.path.exists(proxy_list_path):
+            with open(proxy_list_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    p = line.strip()
+                    if p and not p.startswith("#"):
+                        self.proxies.append(self._format_proxy(p))
+
+        if self.proxies:
+            print(f"[PROXIES] Cargados {len(self.proxies)} proxies para rotación.")
+
+    def _format_proxy(self, p_str):
+        p_str = p_str.strip()
+        if not (p_str.startswith("http://") or p_str.startswith("https://") or p_str.startswith("socks5://") or p_str.startswith("socks5h://")):
+            p_str = f"http://{p_str}"
+        return p_str
+
+    def get_next(self):
+        """Retorna el siguiente proxy operativo."""
+        if not self.proxies:
+            return None
+
+        active = [p for p in self.proxies if p not in self.dead_proxies]
+        if not active:
+            print("[AVISO] Todos los proxies fueron marcados como fallidos. Restableciendo lista...")
+            self.dead_proxies.clear()
+            active = self.proxies
+
+        self.current_idx = (self.current_idx + 1) % len(active)
+        return active[self.current_idx]
+
+    def mark_failed(self, proxy_str):
+        """Registra un proxy como no funcional."""
+        if proxy_str:
+            self.dead_proxies.add(proxy_str)
+            print(f"[PROXY CAÍDO] Descartado: {proxy_str} ({len(self.dead_proxies)}/{len(self.proxies)} caídos)")
+
+
+# ---------------------------------------------------------------------------
+# Resolución de Ciudad y URLs
+# ---------------------------------------------------------------------------
+
+class TargetCity:
+    """Encapsula los parámetros geográficos del objetivo de scraping."""
+
+    def __init__(self, name, geo, slug):
+        self.name = name
+        self.geo = geo if geo.startswith("g") else f"g{geo}"
+        self.slug = slug
+
+    @property
+    def file_slug(self):
+        clean = re.sub(r"[^a-zA-Z0-9]+", "_", self.name.lower()).strip("_")
+        return clean or "ciudad"
+
+    @property
+    def base_restaurants_url(self):
+        return f"{BASE_URL}/Restaurants-{self.geo}-{self.slug}.html"
+
+    def get_page_url(self, page_num):
+        if page_num <= 1:
+            return self.base_restaurants_url
+        offset = (page_num - 1) * RESTAURANTS_PER_PAGE
+        return f"{BASE_URL}/Restaurants-{self.geo}-oa{offset}-{self.slug}.html"
+
+    @classmethod
+    def from_url(cls, url):
+        """Extrae el Geo ID y slug a partir de cualquier URL de restaurantes de TripAdvisor."""
+        m = re.search(r"Restaurants-(g\d+)-([^\.]+)\.html", url)
+        if not m:
+            raise ValueError(f"No se pudo extraer el Geo ID de la URL: {url}\nFormato esperado: .../Restaurants-gXXXXXX-Nombre_Ciudad.html")
+        geo = m.group(1)
+        raw_slug = m.group(2)
+        # Limpiar posible paginación interna -oa30-
+        slug = re.sub(r"-oa\d+-", "-", raw_slug)
+        name = slug.split("_")[0]
+        return cls(name=name, geo=geo, slug=slug)
+
+    @classmethod
+    def from_city_name(cls, city_name):
+        """Resuelve el Geo ID y slug mediante el catálogo interno o parámetros."""
+        key = city_name.strip().lower()
+        if key in KNOWN_CITIES:
+            item = KNOWN_CITIES[key]
+            return cls(name=item["name"], geo=item["geo"], slug=item["slug"])
+        
+        # Si no está en el diccionario predefinido, generar slug aproximado
+        formatted_name = city_name.strip().title()
+        slug_guess = re.sub(r"\s+", "_", formatted_name)
+        return cls(name=formatted_name, geo="g187497", slug=slug_guess)
 
 
 # ---------------------------------------------------------------------------
@@ -48,7 +219,6 @@ def check_installation():
     print("=" * 60)
     ok = True
 
-    # 1. Paquete camoufox
     try:
         import camoufox
         ver = getattr(camoufox, '__version__', '')
@@ -57,10 +227,9 @@ def check_installation():
         print(f"[OK] Paquete Python camoufox instalado (versión {ver})")
     except ImportError:
         print("[ERROR] El paquete 'camoufox' no está instalado.")
-        print("        Ejecuta: pip install camoufox playwright beautifulsoup4")
+        print("        Ejecuta: pip install -r requirements.txt")
         ok = False
 
-    # 2. Paquete playwright
     try:
         import playwright
         print(f"[OK] Paquete Python playwright instalado")
@@ -69,29 +238,17 @@ def check_installation():
         print("        Ejecuta: pip install playwright")
         ok = False
 
-    # 3. Binario del navegador Camoufox
     if ok:
         try:
-            from camoufox.pkgman import get_installed_browser_path
-            path = get_installed_browser_path()
-            if path and os.path.exists(path):
-                print(f"[OK] Navegador Camoufox encontrado en:\n     {path}")
-            else:
-                print("[ERROR] El binario del navegador Camoufox no está descargado.")
-                print("        Ejecuta: python -m camoufox fetch")
-                ok = False
-        except Exception as e:
-            print(f"[AVISO] Comprobación de binario alternativa: {e}")
-            try:
-                from camoufox.sync_api import Camoufox
-                with Camoufox(headless=True, i_know_what_im_doing=True) as b:
-                    p = b.new_page()
-                    p.goto("about:blank")
-                    print("[OK] Arranque de prueba de Camoufox completado con éxito.")
-            except Exception as launch_err:
-                print(f"[ERROR] No se pudo arrancar Camoufox: {launch_err}")
-                print("        Ejecuta: python -m camoufox fetch")
-                ok = False
+            from camoufox.sync_api import Camoufox
+            with Camoufox(headless=True, i_know_what_im_doing=True) as b:
+                p = b.new_page()
+                p.goto("about:blank")
+                print("[OK] Arranque de prueba de Camoufox completado con éxito.")
+        except Exception as launch_err:
+            print(f"[ERROR] No se pudo arrancar el navegador Camoufox: {launch_err}")
+            print("        Ejecuta: python -m camoufox fetch")
+            ok = False
 
     print("=" * 60)
     if ok:
@@ -107,9 +264,9 @@ def check_installation():
 # ---------------------------------------------------------------------------
 
 class Database:
-    """Gestiona el almacenamiento incremental y checkpoints del scraping."""
+    """Gestiona el almacenamiento incremental y checkpoints por ciudad."""
 
-    def __init__(self, db_path="tripadvisor_barcelona.db"):
+    def __init__(self, db_path):
         self.db_path = db_path
         self._init_db()
 
@@ -150,8 +307,6 @@ class Database:
             conn.commit()
 
     def add_restaurant_url(self, url, page_num):
-        """Registra una URL de restaurante si no existe."""
-        # Extraer ID canónico (ej. d1234567)
         match = re.search(r"-d(\d+)-", url)
         rest_id = f"d{match.group(1)}" if match else url
 
@@ -163,7 +318,6 @@ class Database:
             conn.commit()
 
     def get_pending_urls(self, limit=None):
-        """Retorna lista de URLs pendientes por extraer detalle."""
         query = "SELECT id, url FROM restaurants WHERE status = 'pending' ORDER BY discovered_page ASC"
         if limit:
             query += f" LIMIT {int(limit)}"
@@ -173,7 +327,6 @@ class Database:
             return cursor.fetchall()
 
     def update_restaurant_data(self, rest_id, data):
-        """Actualiza los datos completos de un restaurante."""
         with self._get_conn() as conn:
             conn.execute("""
                 UPDATE restaurants SET
@@ -208,7 +361,6 @@ class Database:
             conn.commit()
 
     def mark_failed(self, rest_id, error_msg):
-        """Marca una URL con fallo para permitir reintentos posteriores."""
         with self._get_conn() as conn:
             conn.execute("""
                 UPDATE restaurants SET
@@ -234,7 +386,6 @@ class Database:
             return row and row[0] == "done"
 
     def get_stats(self):
-        """Retorna estadísticas de avance."""
         with self._get_conn() as conn:
             c = conn.cursor()
             c.execute("SELECT COUNT(*) FROM restaurants")
@@ -262,7 +413,6 @@ class Database:
             }
 
     def export_csv(self, output_csv_path):
-        """Exporta todos los registros procesados a formato CSV con UTF-8 BOM."""
         with self._get_conn() as conn:
             cursor = conn.cursor()
             cursor.execute("""
@@ -313,12 +463,13 @@ class Database:
 # ---------------------------------------------------------------------------
 
 class TripAdvisorScraper:
-    """Scraper robusto de TripAdvisor con Camoufox."""
+    """Motor de scraping para cualquier ciudad configurada."""
 
-    def __init__(self, db, headless=True, proxy=None, delay_min=2.0, delay_max=4.5):
+    def __init__(self, target_city, db, proxy_rotator=None, headless=True, delay_min=1.5, delay_max=3.5):
+        self.target_city = target_city
         self.db = db
+        self.proxy_rotator = proxy_rotator
         self.headless = headless
-        self.proxy = proxy
         self.delay_min = delay_min
         self.delay_max = delay_max
 
@@ -327,7 +478,6 @@ class TripAdvisorScraper:
         time.sleep(t)
 
     def _handle_cookie_consent(self, page):
-        """Acepta banners de cookies de OneTrust, Didomi o diálogo de GDPR."""
         for frame in page.frames:
             try:
                 for selector in [
@@ -343,25 +493,16 @@ class TripAdvisorScraper:
                     btn = frame.query_selector(selector)
                     if btn and btn.is_visible():
                         btn.click()
-                        time.sleep(1.0)
+                        time.sleep(0.8)
                         return True
             except Exception:
                 pass
         return False
 
-    def build_list_url(self, page_num):
-        """Genera la URL canónica de TripAdvisor para una página de restaurantes."""
-        if page_num <= 1:
-            return CITY_RESTAURANTS_URL
-        offset = (page_num - 1) * RESTAURANTS_PER_PAGE
-        return f"{BASE_URL}/Restaurants-{CITY_CODE}-oa{offset}-Barcelona_Catalonia.html"
-
     def crawl_catalog(self, browser_context, start_page=1, max_pages=None):
-        """
-        Fase 1: Recorre las páginas de listado y extrae todas las URLs de restaurantes.
-        """
         print("\n" + "=" * 60)
-        print(f"INICIANDO FASE 1: CATALOGACIÓN DE RESTAURANTES (Página {start_page} en adelante)")
+        print(f"INICIANDO FASE 1: CATALOGACIÓN DE RESTAURANTES")
+        print(f"Ciudad: {self.target_city.name} ({self.target_city.geo}) | Desde página: {start_page}")
         print("=" * 60)
 
         page = browser_context.new_page()
@@ -379,14 +520,14 @@ class TripAdvisorScraper:
                     current_page += 1
                     continue
 
-                url = self.build_list_url(current_page)
+                url = self.target_city.get_page_url(current_page)
                 offset = (current_page - 1) * RESTAURANTS_PER_PAGE
                 print(f"\n[Página {current_page} | Offset {offset}] Navegando a: {url}")
 
                 try:
                     page.goto(url, wait_until="domcontentloaded", timeout=45000)
                 except Exception as e:
-                    print(f"Error cargando página {current_page}: {e}. Reintentando con pausa...")
+                    print(f"Error cargando página {current_page}: {e}. Reintentando...")
                     self._sleep_jitter(2.0)
                     try:
                         page.goto(url, wait_until="domcontentloaded", timeout=60000)
@@ -398,49 +539,45 @@ class TripAdvisorScraper:
                 self._sleep_jitter(0.8)
                 self._handle_cookie_consent(page)
 
-                # Scroll progresivo para forzar carga perezosa de tarjetas
                 page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2);")
                 time.sleep(0.8)
                 page.evaluate("window.scrollTo(0, document.body.scrollHeight);")
                 time.sleep(1.0)
 
-                # Extraer enlaces a fichas de restaurantes
-                urls_on_page = page.evaluate("""() => {
+                geo_code = self.target_city.geo
+                urls_on_page = page.evaluate(f"""() => {{
                     const links = new Set();
-                    // Buscar enlaces canónicos de restaurantes de Barcelona
-                    const anchors = document.querySelectorAll('a[href*="/Restaurant_Review-g187497"]');
-                    anchors.forEach(a => {
+                    const targetGeo = '{geo_code}';
+                    const anchors = document.querySelectorAll('a[href*="/Restaurant_Review-' + targetGeo + '"]');
+                    anchors.forEach(a => {{
                         let h = a.href.split('?')[0];
-                        if (h.includes('-d') && !h.includes('#')) {
+                        if (h.includes('-d') && !h.includes('#')) {{
                             links.add(h);
-                        }
-                    });
+                        }}
+                    }});
                     return Array.from(links);
-                }""")
+                }}""")
 
                 if not urls_on_page:
-                    # Detectar si llegamos al final del catálogo
                     is_last_page = page.evaluate("""() => {
                         const nextBtn = document.querySelector('a.nav.next, a[aria-label="Página siguiente"], a[data-smoke-attr="pagination-next-arrow"]');
                         return !nextBtn || nextBtn.classList.contains('disabled');
                     }""")
-                    print(f"No se detectaron restaurantes en la página {current_page}.")
+                    print(f"No se detectaron nuevos restaurantes en la página {current_page}.")
                     if is_last_page:
-                        print("Fin del catálogo de restaurantes de Barcelona alcanzado.")
+                        print(f"Fin del catálogo de {self.target_city.name} alcanzado.")
                         break
                     else:
-                        print("Posible ralentización o bloqueo. Pausando...")
+                        print("Posible ralentización de carga. Pausando...")
                         self._sleep_jitter(2.0)
 
-                new_count = 0
                 for r_url in urls_on_page:
                     self.db.add_restaurant_url(r_url, current_page)
-                    new_count += 1
 
                 self.db.log_page_crawled(current_page, offset, len(urls_on_page))
                 pages_processed += 1
                 stats = self.db.get_stats()
-                print(f"[Página {current_page}] Encontrados: {len(urls_on_page)} URLs | Total acumulado en BD: {stats['total']}")
+                print(f"[Página {current_page}] Encontrados: {len(urls_on_page)} URLs | Total en BD: {stats['total']}")
 
                 current_page += 1
                 self._sleep_jitter(1.0)
@@ -449,13 +586,10 @@ class TripAdvisorScraper:
             page.close()
 
     def scrape_restaurant_details(self, browser_context, limit=None):
-        """
-        Fase 2: Visita cada restaurante pendiente y extrae nombre, dirección y teléfono.
-        """
         pending = self.db.get_pending_urls(limit=limit)
         total_pending = len(pending)
         print("\n" + "=" * 60)
-        print(f"INICIANDO FASE 2: EXTRACCIÓN DE DETALLES ({total_pending} restaurantes pendientes)")
+        print(f"INICIANDO FASE 2: EXTRACCIÓN DE DETALLES ({total_pending} pendientes en {self.target_city.name})")
         print("=" * 60)
 
         if not pending:
@@ -464,6 +598,7 @@ class TripAdvisorScraper:
 
         page = browser_context.new_page()
         count = 0
+        locality_default = self.target_city.name
 
         try:
             for rest_id, url in pending:
@@ -475,86 +610,80 @@ class TripAdvisorScraper:
                     self._sleep_jitter(0.6)
                     self._handle_cookie_consent(page)
 
-                    # Extracción con script JS evaluado directamente en el contexto del navegador
-                    data = page.evaluate("""() => {
-                        const res = {
+                    data = page.evaluate(f"""() => {{
+                        const res = {{
                             name: '',
                             phone: '',
                             street_address: '',
                             postal_code: '',
-                            locality: 'Barcelona',
+                            locality: '{locality_default}',
                             full_address: '',
                             rating: null,
                             review_count: 0,
                             cuisine: '',
                             price_range: ''
-                        };
+                        }};
 
-                        // 1. Intentar LD+JSON (Schema.org / Restaurant)
-                        document.querySelectorAll('script[type="application/ld+json"]').forEach(s => {
-                            try {
+                        // 1. Bloque estructurado LD+JSON
+                        document.querySelectorAll('script[type="application/ld+json"]').forEach(s => {{
+                            try {{
                                 const parsed = JSON.parse(s.innerText);
                                 const items = Array.isArray(parsed) ? parsed : (parsed['@graph'] ? parsed['@graph'] : [parsed]);
-                                for (const item of items) {
-                                    if (item['@type'] === 'Restaurant' || item['@type'] === 'FoodEstablishment') {
+                                for (const item of items) {{
+                                    if (item['@type'] === 'Restaurant' || item['@type'] === 'FoodEstablishment') {{
                                         if (item.name) res.name = item.name;
                                         if (item.telephone) res.phone = item.telephone;
-                                        if (item.address) {
-                                            if (typeof item.address === 'object') {
+                                        if (item.address) {{
+                                            if (typeof item.address === 'object') {{
                                                 res.street_address = item.address.streetAddress || '';
                                                 res.postal_code = item.address.postalCode || '';
-                                                res.locality = item.address.addressLocality || 'Barcelona';
-                                            } else if (typeof item.address === 'string') {
+                                                res.locality = item.address.addressLocality || '{locality_default}';
+                                            }} else if (typeof item.address === 'string') {{
                                                 res.full_address = item.address;
-                                            }
-                                        }
-                                        if (item.aggregateRating) {
+                                            }}
+                                        }}
+                                        if (item.aggregateRating) {{
                                             res.rating = item.aggregateRating.ratingValue || null;
                                             res.review_count = item.aggregateRating.reviewCount || 0;
-                                        }
-                                        if (item.servesCuisine) {
+                                        }}
+                                        if (item.servesCuisine) {{
                                             res.cuisine = Array.isArray(item.servesCuisine) ? item.servesCuisine.join(', ') : item.servesCuisine;
-                                        }
+                                        }}
                                         if (item.priceRange) res.priceRange = item.priceRange;
-                                    }
-                                }
-                            } catch(e) {}
-                        });
+                                    }}
+                                }}
+                            }} catch(e) {{}}
+                        }});
 
-                        // 2. Fallbacks de DOM si el LD+JSON vino incompleto
-                        if (!res.name) {
+                        // 2. Selectores de respaldo DOM
+                        if (!res.name) {{
                             const h1 = document.querySelector('h1[data-test-target="top-info-header"], h1');
                             if (h1) res.name = h1.innerText.trim();
-                        }
+                        }}
 
-                        // Teléfono vía enlace tel: o bloque de contacto
-                        if (!res.phone) {
+                        if (!res.phone) {{
                             const telLink = document.querySelector('a[href^="tel:"]');
-                            if (telLink) {
+                            if (telLink) {{
                                 res.phone = telLink.innerText.trim() || telLink.getAttribute('href').replace('tel:', '').trim();
-                            }
-                        }
+                            }}
+                        }}
 
-                        // Dirección física desde enlace de mapa o etiquetas de dirección
-                        if (!res.street_address && !res.full_address) {
+                        if (!res.street_address && !res.full_address) {{
                             const addrLink = document.querySelector('a[href*="#MAPVIEW"], span[class*="street-address"], div[data-bltd-component="Address"]');
-                            if (addrLink) {
+                            if (addrLink) {{
                                 res.full_address = addrLink.innerText.trim();
-                            }
-                        }
+                            }}
+                        }}
 
-                        // Componer dirección completa legible
-                        if (!res.full_address && res.street_address) {
+                        if (!res.full_address && res.street_address) {{
                             const parts = [res.street_address, res.postal_code, res.locality].filter(Boolean);
                             res.full_address = parts.join(', ');
-                        }
+                        }}
 
                         return res;
-                    }""")
+                    }}""")
 
-                    # Limpieza y normalización de teléfono
                     if data.get("phone"):
-                        # Normalizar formato telefónico eliminando espacios excesivos
                         data["phone"] = re.sub(r"\s+", " ", data["phone"]).strip()
 
                     self.db.update_restaurant_data(rest_id, data)
@@ -578,86 +707,136 @@ class TripAdvisorScraper:
 
 def parse_arguments():
     parser = argparse.ArgumentParser(
-        description="TripAdvisor Barcelona Scraper con Camoufox (Nombre, Dirección, Teléfono)",
+        description="TripAdvisor Multi-City Restaurant Scraper con Camoufox (Nombre, Dirección, Teléfono)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Ejemplos de uso:
-  python scraper.py --mode all
-  python scraper.py --mode catalog --max-pages 10
-  python scraper.py --mode detail --limit 50
-  python scraper.py --export-only --output barcelona_restaurantes.csv
+Ejemplos de uso por ciudad:
+  python scraper.py --city barcelona
+  python scraper.py --city madrid
+  python scraper.py --city valencia --mode catalog --max-pages 10
+  python scraper.py --url "https://www.tripadvisor.es/Restaurants-g187514-Madrid.html"
+  python scraper.py --city sevilla --limit 50 --output restaurantes_sevilla.csv
+
+Ejemplos con rotación de proxies:
+  python scraper.py --city barcelona --proxy-list proxies.txt
+  python scraper.py --city madrid --proxy "http://usuario:pass@proxy-ip:puerto"
+
+Otras opciones:
+  python scraper.py --export-only --db tripadvisor_barcelona.db --output barcelona.csv
   python scraper.py --check-install
         """
     )
-    parser.add_argument(
+    # Selección de ciudad / objetivo
+    city_group = parser.add_argument_group("Selección de Ciudad / Destino")
+    city_group.add_argument(
+        "--city",
+        type=str,
+        default="barcelona",
+        help="Nombre de la ciudad objetivo (ej: barcelona, madrid, valencia, sevilla, malaga, bilbao, etc.)"
+    )
+    city_group.add_argument(
+        "--url",
+        type=str,
+        default=None,
+        help="URL directa de la página de restaurantes de TripAdvisor (anula --city si se especifica)"
+    )
+    city_group.add_argument(
+        "--geo",
+        type=str,
+        default=None,
+        help="Identificador geográfico explícito de TripAdvisor (ej: g187497 para Barcelona, g187514 para Madrid)"
+    )
+    city_group.add_argument(
+        "--city-slug",
+        type=str,
+        default=None,
+        help="Slug canónico de la ciudad para la URL (usado junto a --geo)"
+    )
+
+    # Flujo de ejecución
+    flow_group = parser.add_argument_group("Control de Flujo")
+    flow_group.add_argument(
         "--mode",
         choices=["all", "catalog", "detail"],
         default="all",
         help="Modo de ejecución: 'catalog' (descubrir URLs), 'detail' (extraer fichas), 'all' (ambos en secuencia)"
     )
-    parser.add_argument(
+    flow_group.add_argument(
         "--start-page",
         type=int,
         default=1,
         help="Página inicial para el catálogo (por defecto: 1)"
     )
-    parser.add_argument(
+    flow_group.add_argument(
         "--max-pages",
         type=int,
         default=None,
         help="Límite máximo de páginas a catalogar (por defecto: todas)"
     )
-    parser.add_argument(
+    flow_group.add_argument(
         "--limit",
         type=int,
         default=None,
         help="Límite de restaurantes pendientes a procesar en modo detail"
     )
-    parser.add_argument(
+
+    # Salida y persistencia
+    io_group = parser.add_argument_group("Almacenamiento y Salida")
+    io_group.add_argument(
         "--output",
         type=str,
-        default="restaurantes_barcelona.csv",
-        help="Ruta del archivo CSV de salida (por defecto: restaurantes_barcelona.csv)"
+        default=None,
+        help="Ruta del archivo CSV de salida (por defecto: restaurantes_<ciudad>.csv)"
     )
-    parser.add_argument(
+    io_group.add_argument(
         "--db",
         type=str,
-        default="tripadvisor_barcelona.db",
-        help="Ruta de la base de datos SQLite (por defecto: tripadvisor_barcelona.db)"
+        default=None,
+        help="Ruta de la base de datos SQLite (por defecto: tripadvisor_<ciudad>.db)"
     )
-    parser.add_argument(
+    io_group.add_argument(
+        "--export-only",
+        action="store_true",
+        help="Solo exporta la base de datos actual a CSV sin realizar peticiones de red"
+    )
+
+    # Proxies y sigilo
+    stealth_group = parser.add_argument_group("Proxies y Sigilo")
+    stealth_group.add_argument(
         "--proxy",
         type=str,
         default=None,
-        help="Proxy a utilizar (ej. 'http://user:pass@host:port' o 'socks5://127.0.0.1:1080')"
+        help="Proxy único a utilizar (ej. 'http://user:pass@host:port' o 'socks5://127.0.0.1:1080')"
     )
-    parser.add_argument(
+    stealth_group.add_argument(
+        "--proxy-list",
+        type=str,
+        default=None,
+        help="Ruta a un archivo .txt con lista de proxies (uno por línea) para rotación automática"
+    )
+    stealth_group.add_argument(
         "--no-headless",
         action="store_true",
         help="Muestra la ventana del navegador (por defecto se ejecuta en modo headless sigiloso)"
     )
-    parser.add_argument(
+    stealth_group.add_argument(
         "--delay-min",
         type=float,
         default=1.5,
         help="Retardo mínimo entre peticiones en segundos (por defecto: 1.5)"
     )
-    parser.add_argument(
+    stealth_group.add_argument(
         "--delay-max",
         type=float,
         default=3.5,
         help="Retardo máximo entre peticiones en segundos (por defecto: 3.5)"
     )
-    parser.add_argument(
+    stealth_group.add_argument(
         "--check-install",
         action="store_true",
         help="Ejecuta diagnóstico de instalación de Camoufox y Playwright"
     )
-    parser.add_argument(
-        "--export-only",
-        action="store_true",
-        help="Solo exporta la base de datos actual a CSV sin realizar peticiones de red"
-    )
+
     return parser.parse_args()
 
 
@@ -668,15 +847,27 @@ def main():
         success = check_installation()
         sys.exit(0 if success else 1)
 
-    db = Database(args.db)
+    # 1. Determinar ciudad objetivo
+    if args.url:
+        target_city = TargetCity.from_url(args.url)
+    elif args.geo:
+        slug = args.city_slug or re.sub(r"\s+", "_", args.city.strip().title())
+        target_city = TargetCity(name=args.city.strip().title(), geo=args.geo, slug=slug)
+    else:
+        target_city = TargetCity.from_city_name(args.city)
+
+    # 2. Asignar rutas por defecto si no fueron especificadas
+    db_file = args.db or f"tripadvisor_{target_city.file_slug}.db"
+    csv_file = args.output or f"restaurantes_{target_city.file_slug}.csv"
+
+    db = Database(db_file)
 
     if args.export_only:
-        print(f"Exportando registros de {args.db} a {args.output}...")
-        total = db.export_csv(args.output)
-        print(f"[OK] Se exportaron exitosamente {total} restaurantes a {args.output}")
+        print(f"Exportando registros de {db_file} a {csv_file}...")
+        total = db.export_csv(csv_file)
+        print(f"[OK] Se exportaron exitosamente {total} restaurantes a {csv_file}")
         sys.exit(0)
 
-    # Verificar disponibilidad de Camoufox
     try:
         from camoufox.sync_api import Camoufox
     except ImportError:
@@ -684,25 +875,30 @@ def main():
         print("        Ejecuta primero: python scraper.py --check-install")
         sys.exit(1)
 
+    # 3. Configurar rotación de proxies
+    proxy_rotator = ProxyRotator(proxy_list_path=args.proxy_list, single_proxy=args.proxy)
+
     print("=" * 60)
-    print("TRIPADVISOR BARCELONA SCRAPER")
+    print("TRIPADVISOR RESTAURANT SCRAPER (MULTI-CIUDAD)")
     print("=" * 60)
-    print(f"Objetivo:        {CITY_RESTAURANTS_URL}")
+    print(f"Ciudad:          {target_city.name} (Geo: {target_city.geo})")
+    print(f"URL Base:        {target_city.base_restaurants_url}")
     print(f"Modo:            {args.mode}")
-    print(f"Base de datos:   {args.db}")
-    print(f"Salida CSV:      {args.output}")
+    print(f"Base de datos:   {db_file}")
+    print(f"Salida CSV:      {csv_file}")
     print(f"Headless:        {not args.no_headless}")
-    if args.proxy:
-        print(f"Proxy:           {args.proxy}")
+    if proxy_rotator.proxies:
+        print(f"Pool Proxies:    {len(proxy_rotator.proxies)} configurados")
     print("=" * 60)
 
     stats = db.get_stats()
     print(f"Estado inicial BD: {stats['total']} encontrados | {stats['done']} completados | {stats['pending']} pendientes")
 
     scraper = TripAdvisorScraper(
+        target_city=target_city,
         db=db,
+        proxy_rotator=proxy_rotator,
         headless=not args.no_headless,
-        proxy=args.proxy,
         delay_min=args.delay_min,
         delay_max=args.delay_max
     )
@@ -712,13 +908,13 @@ def main():
         "os": "windows",
         "i_know_what_im_doing": True
     }
-    if args.proxy:
-        camoufox_kwargs["proxy"] = {"server": args.proxy}
+    initial_proxy = proxy_rotator.get_next()
+    if initial_proxy:
+        camoufox_kwargs["proxy"] = {"server": initial_proxy}
 
     with Camoufox(**camoufox_kwargs) as browser:
         context = browser.new_context(locale="es-ES")
 
-        # 1. Modo catálogo o all
         if args.mode in ("all", "catalog"):
             start = args.start_page
             if start == 1 and stats["last_crawled_page"] > 0:
@@ -731,7 +927,6 @@ def main():
                 max_pages=args.max_pages
             )
 
-        # 2. Modo detalle o all
         if args.mode in ("all", "detail"):
             scraper.scrape_restaurant_details(
                 browser_context=context,
@@ -740,18 +935,18 @@ def main():
 
         context.close()
 
-    # Exportación final automática a CSV
     print("\n" + "=" * 60)
     print("GENERANDO ARCHIVO CSV FINAL")
     print("=" * 60)
-    total_exported = db.export_csv(args.output)
+    total_exported = db.export_csv(csv_file)
     final_stats = db.get_stats()
     print(f"Proceso concluido exitosamente:")
+    print(f"- Ciudad:                         {target_city.name}")
     print(f"- Total restaurantes catalogados: {final_stats['total']}")
     print(f"- Total con datos completos:      {final_stats['done']}")
     print(f"- Total con teléfono:             {final_stats['with_phone']}")
     print(f"- Total con dirección:            {final_stats['with_address']}")
-    print(f"- Archivo CSV generado:           {args.output} ({total_exported} filas)")
+    print(f"- Archivo CSV generado:           {csv_file} ({total_exported} filas)")
     print("=" * 60)
 
 

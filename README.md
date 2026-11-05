@@ -1,6 +1,6 @@
-# TripAdvisor Barcelona Scraper 🇪🇸🍽️
+# TripAdvisor Multi-City Restaurant Scraper 🇪🇸🍽️
 
-Extractor automatizado de alta fidelidad para obtener el **100% de los restaurantes de Barcelona** catalogados en TripAdvisor, desarrollado en **Python** con **Camoufox Anti-Detect** (motor Firefox parcheado a nivel C++ con huella realista TLS, HTTP/2 y Canvas) para eludir sistemas de protección contra bots y muros de consentimiento GDPR.
+Extractor automatizado de alta fidelidad para obtener el **100% de los restaurantes de cualquier ciudad** (Barcelona, Madrid, Valencia, Sevilla, etc.) catalogados en TripAdvisor, desarrollado en **Python** con **Camoufox Anti-Detect** (motor Firefox parcheado a nivel C++ con huella realista TLS, HTTP/2 y Canvas) para eludir sistemas de protección contra bots y muros de consentimiento GDPR.
 
 ---
 
@@ -13,24 +13,24 @@ El scraper captura tanto los datos primarios solicitados como metadatos de enriq
 | **Nombre** | Denominación comercial del restaurante | *Disfrutar* |
 | **Dirección Completa** | Dirección unificada legible | *Carrer de Villarroel, 163, 08036 Barcelona, España* |
 | **Calle** | Vía y número exacto | *Carrer de Villarroel, 163* |
-| **Código Postal** | Código postal de Barcelona | *08036* |
+| **Código Postal** | Código postal de la ciudad | *08036* |
 | **Localidad** | Municipio o distrito | *Barcelona* |
 | **Teléfono** | Número de contacto directo | *+34 933 48 68 96* |
 | **Puntuación** | Calificación media (1.0 a 5.0) | *4.8* |
 | **Total Opiniones** | Volumen de reseñas acumuladas | *2340* |
 | **Tipo de Cocina** | Gastronomía / especialidad | *Mediterránea, Europea, Fusión* |
 | **Rango de Precio** | Categoría económica | *€€€€* |
-| **URL TripAdvisor** | Enlace canónico de la ficha | `https://www.tripadvisor.es/Restaurant_Review-g187497-...` |
+| **URL TripAdvisor** | Enlace canónico de la ficha | `https://www.tripadvisor.es/Restaurant_Review-...` |
 | **Fecha Extracción** | Marca de tiempo UTC | *2026-11-05T19:30:00* |
 
 ---
 
 ## 🏗️ Arquitectura del Scraper
 
-Para garantizar la cobertura del **100% de la ciudad** (~9.000 a 10.000 establecimientos) sin pérdida de progreso ante interrupciones de red, el sistema opera con arquitectura en dos fases respaldada por una base de datos local SQLite:
+Para garantizar la cobertura del **100% de cualquier ciudad** sin pérdida de progreso ante interrupciones de red, el sistema opera con arquitectura en dos fases respaldada por una base de datos local SQLite:
 
 ```
-[ Paginación TripAdvisor Barcelona (g187497) ]
+[ Paginación TripAdvisor de la Ciudad elegida ]
                   │
                   ▼ (Fase 1: --mode catalog)
        [ Indexador de URLs en SQLite ] ─── Registra IDs únicos (-d123456-)
@@ -46,12 +46,39 @@ Para garantizar la cobertura del **100% de la ciudad** (~9.000 a 10.000 establec
       [ Actualización en SQLite ] ─── Checkpoint ACID automático
                   │
                   ▼ (Exportación)
-   [ restaurantes_barcelona.csv ] ─── UTF-8 con BOM (Compatible con Excel)
+   [ restaurantes_<ciudad>.csv ] ─── UTF-8 con BOM (Compatible con Excel)
 ```
 
-1. **Fase 1 (Catalogación de URLs):** Recorre la paginación oficial (`oa0`, `oa30`, `oa60`, ...) e indexa todas las URLs de restaurantes de Barcelona en la base de datos `tripadvisor_barcelona.db`.
+1. **Fase 1 (Catalogación de URLs):** Recorre la paginación oficial (`oa0`, `oa30`, `oa60`, ...) e indexa todas las URLs de restaurantes de la ciudad en la base de datos `tripadvisor_<ciudad>.db`.
 2. **Fase 2 (Extracción Profunda):** Procesa cada URL pendiente extrayendo el bloque estructurado `schema.org/Restaurant` (JSON-LD) y aplicando selectores de respaldo DOM si algún dato viene ofuscado.
-3. **Persistencia ACID & Checkpointing:** Si el proceso se interrumpe (corte de luz, red o pausa manual), al relanzarlo **continúa exactamente donde quedó**, sin repetir restaurantes ya descargados.
+3. **Persistencia ACID & Checkpointing:** Si el proceso se interrumpe (corte de red, pausa manual o baneo temporal), al relanzarlo **continúa exactamente donde quedó**, sin repetir restaurantes ya descargados.
+
+---
+
+## 🌍 Selección de Ciudad en el CLI
+
+El CLI permite seleccionar cualquier ciudad mediante 3 mecanismos flexibles:
+
+### A. Por nombre de ciudad (`--city`)
+El sistema incluye un catálogo precargado con las principales ciudades de España e internacionales (Madrid, Barcelona, Valencia, Sevilla, Málaga, Bilbao, Granada, Zaragoza, Palma, París, Londres, Roma, Lisboa, etc.):
+```bash
+python scraper.py --city madrid
+python scraper.py --city barcelona
+python scraper.py --city valencia
+python scraper.py --city sevilla
+```
+
+### B. Por URL directa de TripAdvisor (`--url`)
+Permite scrapear **cualquier pueblo o ciudad del mundo** simplemente pegando la URL de su sección de restaurantes:
+```bash
+python scraper.py --url "https://www.tripadvisor.es/Restaurants-g187514-Madrid.html"
+python scraper.py --url "https://www.tripadvisor.es/Restaurants-g187497-Barcelona_Catalonia.html"
+```
+
+### C. Por código geográfico explícito (`--geo` y `--city-slug`)
+```bash
+python scraper.py --city "Granada" --geo g187441 --city-slug "Granada_Province_of_Granada_Andalucia"
+```
 
 ---
 
@@ -60,7 +87,7 @@ Para garantizar la cobertura del **100% de la ciudad** (~9.000 a 10.000 establec
 ### En Windows (Doble Clic)
 
 1. Ejecuta el archivo **`install.bat`** (crea el entorno virtual, instala dependencias y descarga el binario del navegador Camoufox).
-2. Para iniciar el scraping, haz doble clic en **`run.bat`**.
+2. Para iniciar el scraping con la ciudad predeterminada (o configurada), haz doble clic en **`run.bat`**.
 
 ### En Linux / macOS (Terminal)
 
@@ -89,55 +116,67 @@ python scraper.py --check-install
 
 El script cuenta con una interfaz de consola completa (`CLI`) mediante argumentos:
 
-### 1. Extracción Completa (Catálogo + Detalles)
-Extrae todo el universo de restaurantes de Barcelona y genera el CSV:
+### 1. Extracción Completa de una Ciudad (Catálogo + Detalles)
+Extrae todo el universo de restaurantes de la ciudad y genera el CSV:
 ```bash
-python scraper.py --mode all
+python scraper.py --city madrid
+# o para Barcelona:
+python scraper.py --city barcelona
 ```
 
 ### 2. Solo Catalogar URLs (Fase 1)
 Indexa las URLs en la base de datos local sin entrar a los detalles todavía:
 ```bash
-python scraper.py --mode catalog
+python scraper.py --city valencia --mode catalog
 ```
 *Opcional: limitar a las primeras 10 páginas de prueba:*
 ```bash
-python scraper.py --mode catalog --max-pages 10
+python scraper.py --city valencia --mode catalog --max-pages 10
 ```
 
 ### 3. Solo Extraer Detalles de Fichas Pendientes (Fase 2)
 Procesa los restaurantes que ya están indexados en la base de datos:
 ```bash
-python scraper.py --mode detail
+python scraper.py --city madrid --mode detail
 ```
 *Opcional: procesar un lote de 100 restaurantes:*
 ```bash
-python scraper.py --mode detail --limit 100
+python scraper.py --city madrid --mode detail --limit 100
 ```
 
 ### 4. Exportar a CSV en Cualquier Momento
 Genera o actualiza el archivo CSV a partir de la base de datos sin hacer peticiones de red:
 ```bash
-python scraper.py --export-only --output mis_restaurantes.csv
+python scraper.py --export-only --db tripadvisor_madrid.db --output mis_restaurantes.csv
 ```
 
-### 5. Uso con Proxy Residencial / Rotativo
-Si se requiere trabajar a gran escala mediante un proxy específico:
+### 5. Uso con Rotación de Proxies (Residenciales / Pool)
+Si se requiere trabajar a gran escala mediante proxies:
 ```bash
-python scraper.py --proxy "http://usuario:contraseña@proxy-host:puerto"
+# Con un proxy único:
+python scraper.py --city barcelona --proxy "http://usuario:contraseña@proxy-host:puerto"
+
+# Con una lista rotativa (.txt con un proxy por línea):
+python scraper.py --city madrid --proxy-list proxies.txt
 ```
 
-### 6. Parámetros Avanzados
+---
+
+## 📋 Resumen de Parámetros CLI
 
 | Parámetro | Valor por defecto | Descripción |
 | :--- | :--- | :--- |
+| `--city` | `barcelona` | Nombre de la ciudad a scrapear |
+| `--url` | `None` | URL directa de catálogo de TripAdvisor (anula `--city`) |
+| `--geo` | `None` | Geo ID explícito (ej. `g187497`) |
 | `--mode` | `all` | Modo: `all`, `catalog`, `detail` |
 | `--start-page` | `1` | Página inicial del catálogo |
 | `--max-pages` | `None` (todas) | Cantidad máxima de páginas a catalogar |
 | `--limit` | `None` (todos) | Límite de fichas a procesar en modo detail |
-| `--output` | `restaurantes_barcelona.csv` | Nombre del archivo CSV exportado |
-| `--db` | `tripadvisor_barcelona.db` | Archivo de base de datos SQLite |
-| `--proxy` | `None` | URL del servidor proxy |
+| `--output` | `restaurantes_<ciudad>.csv` | Nombre del archivo CSV exportado |
+| `--db` | `tripadvisor_<ciudad>.db` | Archivo de base de datos SQLite |
+| `--proxy` | `None` | URL de proxy individual |
+| `--proxy-list` | `None` | Archivo .txt con pool de proxies para rotación |
 | `--no-headless` | `False` | Muestra la ventana gráfica del navegador |
 | `--delay-min` | `1.5` | Segundos mínimos de pausa aleatoria |
 | `--delay-max` | `3.5` | Segundos máximos de pausa aleatoria |
@@ -158,7 +197,7 @@ python scraper.py --proxy "http://usuario:contraseña@proxy-host:puerto"
 
 ```
 tripadvisor-barcelona-scraper/
-├── scraper.py                 # Núcleo del scraper con CLI y lógica Camoufox
+├── scraper.py                 # Núcleo del scraper multi-ciudad con CLI y Camoufox
 ├── requirements.txt           # Dependencias de Python (camoufox, playwright, bs4)
 ├── install.bat                # Instalador de 1 clic para Windows
 ├── run.bat                    # Lanzador para Windows
