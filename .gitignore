@@ -1,0 +1,29 @@
+# Entornos virtuales
+venv/
+.venv/
+env/
+
+# Caché de Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Datos y bases de datos locales
+*.db
+*.sqlite
+*.sqlite3
+
+# Archivos de salida grandes generados
+*.csv
+!ejemplo_restaurantes.csv
+
+# Logs y volcados temporales
+*.log
+*.png
+*.html
+response.html
+
+# IDEs
+.vscode/
+.idea/
+*.swp

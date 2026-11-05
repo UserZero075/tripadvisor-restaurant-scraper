@@ -1,0 +1,5 @@
+# TripAdvisor Barcelona Scraper - Dependencias
+camoufox>=0.5.9
+playwright>=1.49.0
+beautifulsoup4>=4.12.0
+requests>=2.31.0
