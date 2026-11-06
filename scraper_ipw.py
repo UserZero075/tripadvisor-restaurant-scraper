@@ -86,7 +86,25 @@ def _s(v):
     return str(v)
 
 
-def parse_detail(page, source_url):
+def wait_for_ld(page, max_ms=9000):
+    """Espera a que aparezca un bloque ld+json con telefono (evita espera fija)."""
+    waited = 0
+    while waited < max_ms:
+        try:
+            n = page.eval_on_selector_all(
+                'script[type="application/ld+json"]',
+                "els => els.filter(e => e.textContent.includes('telephone')).length",
+            )
+            if n:
+                return True
+        except Exception:
+            pass
+        page.wait_for_timeout(400)
+        waited += 400
+    return False
+
+
+def parse_detail(page, source_url, default_locality=None):
     """Devuelve dict con los campos del CSV o None si la ficha no es valida."""
     rest_id = extract_rest_id(source_url)
     final_url = page.url
@@ -107,7 +125,7 @@ def parse_detail(page, source_url):
         cuisine = _s(cuisine) or None
         street = _s(addr.get("streetAddress"))
         pc = _s(addr.get("postalCode"))
-        loc = _s(addr.get("addressLocality"))
+        loc = _s(addr.get("addressLocality")) or (default_locality or "")
         country = _s(addr.get("addressCountry"))
         if country.upper() == "ES":
             country = "España"
@@ -151,7 +169,8 @@ def parse_detail(page, source_url):
 
 class IPWCrawler:
     def __init__(self, browser, db, target, delay_min, delay_max,
-                 page_delay_min, page_delay_max, batch_size, cool_min, cool_max):
+                 page_delay_min, page_delay_max, batch_size, cool_min, cool_max,
+                 geo_filter=None):
         self.browser = browser
         self.db = db
         self.target = target
@@ -164,6 +183,7 @@ class IPWCrawler:
         self.cool_max = cool_max
         self.page = None
         self.counter = 0
+        self.geo_filter = geo_filter
 
     # -- navegacion ---------------------------------------------------------
     def ensure_page(self):
@@ -264,7 +284,11 @@ class IPWCrawler:
         print("FASE 2 - EXTRACCION DE FICHAS")
         print("=" * 66)
         page = self.ensure_page()
-        pending = self.db.get_pending_urls(limit=limit)
+        pending = self.db.get_pending_urls(limit=None)
+        if self.geo_filter:
+            pending = [(rid, u) for rid, u in pending if self.geo_filter in u]
+        if limit:
+            pending = pending[:limit]
         print(f"Pendientes a procesar: {len(pending)}")
         done = 0
         for idx, (rid, url) in enumerate(pending, 1):
@@ -273,12 +297,13 @@ class IPWCrawler:
             for attempt in (1, 2):
                 try:
                     page.goto(url, timeout=60000)
-                    page.wait_for_timeout(random.randint(2500, 4000))
+                    wait_for_ld(page, max_ms=9000)
+                    page.wait_for_timeout(random.randint(250, 700))
                     if not self.assert_not_blocked():
                         print("  [BLOQUEO] challenge detectado, cooldown largo")
                         self.scroll_like_human(random.uniform(35, 55))
                         continue
-                    data = parse_detail(page, url)
+                    data = parse_detail(page, url, default_locality=self.target.name)
                     if data:
                         break
                 except Exception as e:
@@ -313,6 +338,8 @@ def main():
     ap.add_argument("--batch-cooldown-min", type=float, default=20.0)
     ap.add_argument("--batch-cooldown-max", type=float, default=38.0)
     ap.add_argument("--export-only", action="store_true")
+    ap.add_argument("--geo-filter", default=None,
+                    help="Procesa solo fichas cuyo Geo ID coincida (ej: g187529)")
     args = ap.parse_args()
 
     target = TargetCity.from_url(args.url) if args.url else TargetCity.from_city_name(args.city)
@@ -342,7 +369,8 @@ def main():
         cr = IPWCrawler(browser, db, target,
                         args.delay_min, args.delay_max,
                         args.page_delay_min, args.page_delay_max,
-                        args.batch_size, args.batch_cooldown_min, args.batch_cooldown_max)
+                        args.batch_size, args.batch_cooldown_min, args.batch_cooldown_max,
+                        geo_filter=args.geo_filter)
         if args.mode in ("all", "catalog"):
             cr.crawl_catalog(start_page=1, max_pages=args.max_pages)
         if args.mode in ("all", "detail"):
