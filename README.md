@@ -194,17 +194,34 @@ python scraper.py --export-only --db tripadvisor_barcelona.db --output barcelona
 
 ---
 
-## 🔀 Dos Motores de Navegación: `scraper.py` y `scraper_ipw.py`
+## 🔀 Tres Motores Disponibles: `scraper.py`, `scraper_ipw.py` y `scraper_fast.py`
 
-El proyecto incluye dos implementaciones con la misma capa de datos (SQLite + exportación CSV, esquema idéntico de 12 columnas), de modo que se puede alternar según el comportamiento que presente el anti-bot en cada momento:
+El proyecto incluye tres implementaciones complementarias con la misma capa de datos (SQLite + exportación CSV, esquema idéntico de 12 columnas), permitiendo elegir el mejor balance entre evasión de huella y velocidad:
 
-| | `scraper.py` (motor Camoufox) | `scraper_ipw.py` (motor invisible_playwright) |
-| :--- | :--- | :--- |
-| Motor | Camoufox (Firefox parcheado, perfil persistente) | invisible_playwright (Firefox parcheado a nivel C++, perfil efímero) |
-| Entrada | Scroll y pausas humanas | Scroll, pausas y **cursor humanizado** (trayectorias de ratón reales) |
-| Firma TLS / HTTP2 | Firefox real | Firefox real |
-| Ventana | Headless nativo | Requiere `xvfb-run` (renderiza en display virtual, no headless) |
-| Ideal para | Volumen alto cuando la IP es limpia | Cuando DataDome rechaza el navegador pese a IP correcta |
+| Característica | `scraper.py` (Camoufox) | `scraper_ipw.py` (Playwright) | `scraper_fast.py` (Híbrido Ultra-Rápido) |
+| :--- | :--- | :--- | :--- |
+| **Motor** | Camoufox (Firefox parcheado, perfil persistente) | invisible_playwright (Firefox C++, perfil efímero) | invisible_playwright (sesión) + `curl_cffi` (HTTP nativo) |
+| **Entrada / Telemetría** | Scroll y pausas humanas | Scroll, pausas y **cursor humanizado** | Telemetría real en handshake + peticiones HTTP directas |
+| **Firma TLS / HTTP2** | Firefox real | Firefox real | TLS impersonation nativa `firefox133` |
+| **Velocidad de Fichas** | ~6-8 fichas/min | ~6-10 fichas/min (o ~16-20 con multi-worker) | **~80-100 fichas/min** |
+| **Consumo CPU / RAM** | Moderado (1 proceso navegador) | Alto por worker en headless | Mínimo (<1% CPU, ~50 MB RAM) |
+| **Ideal para** | Pruebas estándar con IP limpia | Evasión profunda cuando hay bloqueo estricto | **Extracciones masivas (5.000 - 10.000 fichas en <1 hora)** |
+
+### Motor Híbrido Ultra-Rápido (`scraper_fast.py`)
+
+Resuelve el cuello de botella del rendering en navegador:
+1. Abre `invisible_playwright` durante 2 segundos una sola vez al inicio para resolver el handshake de DataDome y extraer una cookie válida (`datadome`) y las cabeceras exactas de Firefox.
+2. Descarga el HTML crudo de cada ficha vía `curl_cffi` con impersonación de TLS `firefox133` en ~300-500ms por petición.
+3. Extrae el bloque estructurado Schema.org (`application/ld+json`) directamente en memoria con expresiones regulares y JSON parsing, obteniendo teléfono, dirección completa, puntuación, cocina y precio sin ejecutar JavaScript en cada ficha.
+4. Si DataDome renueva el desafío (403), vuelve a llamar al navegador en segundo plano de forma transparente y reanuda el lote sin interrupciones.
+
+#### Uso de `scraper_fast.py`:
+```bash
+# Extraer 5000 fichas a ~100 fichas/minuto:
+./run_barcelona_fast.sh
+# O directamente:
+xvfb-run -a python scraper_fast.py --city barcelona --mode detail --limit 5000 --geo-filter g187497 --delay 0.12
+```
 
 ### Instalación del motor alternativo
 

@@ -4,3 +4,4 @@
 #   VIRTUAL_ENV=.venv-ipw uv pip install -r requirements-ipw.txt
 #   .venv-ipw/bin/invisible-playwright fetch
 invisible-playwright>=0.4
+curl-cffi>=0.7.0

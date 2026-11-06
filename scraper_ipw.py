@@ -184,11 +184,25 @@ class IPWCrawler:
         self.page = None
         self.counter = 0
         self.geo_filter = geo_filter
+        self.block_assets = False
 
     # -- navegacion ---------------------------------------------------------
     def ensure_page(self):
         if self.page is None:
             self.page = self.browser.new_page()
+            if self.block_assets:
+                def _route(route):
+                    try:
+                        if route.request.resource_type in ASSET_TYPES:
+                            route.abort()
+                        else:
+                            route.continue_()
+                    except Exception:
+                        try:
+                            route.continue_()
+                        except Exception:
+                            pass
+                self.page.route("**/*", _route)
         return self.page
 
     def human_pause(self, lo, hi):
@@ -321,6 +335,196 @@ class IPWCrawler:
         return done
 
 
+# ---------------------------------------------------------------------------
+# Modo paralelo: N procesos, cada uno con su navegador, reclamando fichas
+# de la base de datos de forma atomica (status running -> done/failed).
+# ---------------------------------------------------------------------------
+
+ASSET_TYPES = {"image", "media", "font", "stylesheet"}
+
+
+def _db_connect(path):
+    import sqlite3
+    conn = sqlite3.connect(path, timeout=60)
+    conn.execute("PRAGMA busy_timeout=60000")
+    return conn
+
+
+def ensure_claim_column(db_file):
+    conn = _db_connect(db_file)
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(restaurants)")]
+    if "claimed_at" not in cols:
+        conn.execute("ALTER TABLE restaurants ADD COLUMN claimed_at TIMESTAMP")
+        conn.commit()
+    conn.close()
+
+
+def reclaim_stale(db_file, minutes=20):
+    conn = _db_connect(db_file)
+    conn.execute(
+        "UPDATE restaurants SET status='pending' WHERE status='running' "
+        "AND (claimed_at IS NULL OR claimed_at < datetime('now', ?))",
+        (f"-{int(minutes)} minutes",),
+    )
+    conn.commit()
+    conn.close()
+
+
+def claim_next(db_file, geo_filter=None):
+    conn = _db_connect(db_file)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        q = "SELECT id, url FROM restaurants WHERE status='pending'"
+        args = []
+        if geo_filter:
+            q += " AND url LIKE ?"
+            args.append(f"%{geo_filter}%")
+        q += " ORDER BY discovered_page ASC, id ASC LIMIT 1"
+        row = conn.execute(q, args).fetchone()
+        if not row:
+            conn.execute("COMMIT")
+            return None
+        conn.execute(
+            "UPDATE restaurants SET status='running', claimed_at=? WHERE id=?",
+            (datetime.utcnow().isoformat(sep=" ", timespec="seconds"), row[0]),
+        )
+        conn.execute("COMMIT")
+        return row
+    except Exception:
+        try:
+            conn.execute("ROLLBACK")
+        except Exception:
+            pass
+        return None
+    finally:
+        conn.close()
+
+
+def release_failed(db_file, rid):
+    conn = _db_connect(db_file)
+    conn.execute("UPDATE restaurants SET status='failed' WHERE id=?", (rid,))
+    conn.commit()
+    conn.close()
+
+
+def release_pending(db_file, rid):
+    conn = _db_connect(db_file)
+    conn.execute("UPDATE restaurants SET status='pending', claimed_at=NULL WHERE id=?", (rid,))
+    conn.commit()
+    conn.close()
+
+
+def worker_loop(worker_id, db_file, target, geo_filter, block_assets,
+                delay_min, delay_max, batch_size, cool_min, cool_max, log_prefix,
+                limit=None, shared_counter=None):
+    from invisible_playwright import InvisiblePlaywright
+
+    db = Database(db_file)
+    processed = 0
+    ok = 0
+    with InvisiblePlaywright(humanize=True, headless=False, locale="es-ES") as browser:
+        page = browser.new_page()
+        if block_assets:
+            def _route(route):
+                try:
+                    if route.request.resource_type in ASSET_TYPES:
+                        route.abort()
+                    else:
+                        route.continue_()
+                except Exception:
+                    try:
+                        route.continue_()
+                    except Exception:
+                        pass
+            page.route("**/*", _route)
+
+        while True:
+            row = claim_next(db_file, geo_filter)
+            if not row:
+                break
+            if limit is not None and shared_counter is not None:
+                with shared_counter.get_lock():
+                    if shared_counter.value >= limit:
+                        release_pending(db_file, row[0])
+                        break
+                    shared_counter.value += 1
+            rid, url = row
+            processed += 1
+            data = None
+            for attempt in (1, 2):
+                try:
+                    page.goto(url, timeout=60000, wait_until="domcontentloaded")
+                    wait_for_ld(page, max_ms=8000)
+                    if not _page_ok(page):
+                        print(f"{log_prefix} [BLOQUEO] {rid}", flush=True)
+                        _human_scroll(page, random.uniform(20, 35))
+                        continue
+                    data = parse_detail(page, url, default_locality=target.name)
+                    if data:
+                        break
+                except Exception as e:
+                    print(f"{log_prefix} [ERR {attempt}] {rid} {type(e).__name__}", flush=True)
+                    time.sleep(random.uniform(2, 4))
+            if data:
+                db.update_restaurant_data(rid, data)
+                ok += 1
+                print(f"{log_prefix} OK {rid} {data.get('name')}", flush=True)
+            else:
+                release_failed(db_file, rid)
+                print(f"{log_prefix} FAIL {rid}", flush=True)
+            if batch_size and processed % batch_size == 0:
+                pause = random.uniform(cool_min, cool_max)
+                print(f"{log_prefix} cooldown {pause:.1f}s", flush=True)
+                _human_scroll(page, pause)
+            time.sleep(random.uniform(delay_min, delay_max))
+    print(f"{log_prefix} fin: {ok}/{processed} ok", flush=True)
+    return ok
+
+
+def _page_ok(page):
+    try:
+        if len(page.frames) > 1 and "captcha-delivery" in page.frames[1].url:
+            return False
+    except Exception:
+        pass
+    return True
+
+
+def _human_scroll(page, seconds):
+    end = time.time() + seconds
+    while time.time() < end:
+        try:
+            page.evaluate(f"window.scrollBy({{top:{random.randint(200, 500)}, behavior:'smooth'}})")
+        except Exception:
+            pass
+        time.sleep(random.uniform(1.2, 2.4))
+
+
+def run_parallel(args, target, db_file):
+    import multiprocessing as mp
+
+    ensure_claim_column(db_file)
+    reclaim_stale(db_file)
+
+    workers = max(1, args.workers)
+    print(f"Modo paralelo: {workers} procesos | block-assets={args.block_assets} | limit={args.limit}")
+    counter = mp.Value("i", 0)
+    procs = []
+    for i in range(workers):
+        p = mp.Process(
+            target=worker_loop,
+            args=(i + 1, db_file, target, args.geo_filter, args.block_assets,
+                  args.delay_min, args.delay_max,
+                  args.batch_size, args.batch_cooldown_min, args.batch_cooldown_max,
+                  f"[w{i+1}]", args.limit, counter),
+        )
+        p.start()
+        procs.append(p)
+        time.sleep(random.uniform(1.5, 4.0))
+    for p in procs:
+        p.join()
+
+
 def main():
     ap = argparse.ArgumentParser(description="TripAdvisor scraper sobre invisible_playwright")
     ap.add_argument("--city", default="barcelona")
@@ -340,6 +544,10 @@ def main():
     ap.add_argument("--export-only", action="store_true")
     ap.add_argument("--geo-filter", default=None,
                     help="Procesa solo fichas cuyo Geo ID coincida (ej: g187529)")
+    ap.add_argument("--workers", type=int, default=1,
+                    help="Procesos paralelos en la fase de fichas (1 = secuencial)")
+    ap.add_argument("--block-assets", action="store_true",
+                    help="Aborta imagenes, fuentes, media y CSS (acelera la carga)")
     args = ap.parse_args()
 
     target = TargetCity.from_url(args.url) if args.url else TargetCity.from_city_name(args.city)
@@ -373,8 +581,20 @@ def main():
                         geo_filter=args.geo_filter)
         if args.mode in ("all", "catalog"):
             cr.crawl_catalog(start_page=1, max_pages=args.max_pages)
-        if args.mode in ("all", "detail"):
-            cr.scrape_details(limit=args.limit)
+
+    if args.mode in ("all", "detail"):
+        if args.workers > 1:
+            run_parallel(args, target, db_file)
+        else:
+            with InvisiblePlaywright(humanize=True, headless=False, locale="es-ES") as browser:
+                cr2 = IPWCrawler(browser, db, target,
+                                 args.delay_min, args.delay_max,
+                                 args.page_delay_min, args.page_delay_max,
+                                 args.batch_size, args.batch_cooldown_min,
+                                 args.batch_cooldown_max,
+                                 geo_filter=args.geo_filter)
+                cr2.block_assets = args.block_assets
+                cr2.scrape_details(limit=args.limit)
 
     n = db.export_csv(csv_file)
     stats = db.get_stats()
