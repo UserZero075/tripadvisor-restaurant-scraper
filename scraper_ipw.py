@@ -109,6 +109,8 @@ def parse_detail(page, source_url):
         pc = _s(addr.get("postalCode"))
         loc = _s(addr.get("addressLocality"))
         country = _s(addr.get("addressCountry"))
+        if country.upper() == "ES":
+            country = "España"
         full = ", ".join(x for x in [street, f"{pc} {loc}".strip(), country] if x)
         return {
             "name": _s(ld.get("name")) or slug_to_name(source_url),
