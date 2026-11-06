@@ -1,0 +1,6 @@
+# Dependencias del motor alternativo (scraper_ipw.py)
+# Instalacion recomendada con uv:
+#   uv venv --python 3.11 .venv-ipw
+#   VIRTUAL_ENV=.venv-ipw uv pip install -r requirements-ipw.txt
+#   .venv-ipw/bin/invisible-playwright fetch
+invisible-playwright>=0.4

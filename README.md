@@ -194,6 +194,49 @@ python scraper.py --export-only --db tripadvisor_barcelona.db --output barcelona
 
 ---
 
+## 🔀 Dos Motores de Navegación: `scraper.py` y `scraper_ipw.py`
+
+El proyecto incluye dos implementaciones con la misma capa de datos (SQLite + exportación CSV, esquema idéntico de 12 columnas), de modo que se puede alternar según el comportamiento que presente el anti-bot en cada momento:
+
+| | `scraper.py` (motor Camoufox) | `scraper_ipw.py` (motor invisible_playwright) |
+| :--- | :--- | :--- |
+| Motor | Camoufox (Firefox parcheado, perfil persistente) | invisible_playwright (Firefox parcheado a nivel C++, perfil efímero) |
+| Entrada | Scroll y pausas humanas | Scroll, pausas y **cursor humanizado** (trayectorias de ratón reales) |
+| Firma TLS / HTTP2 | Firefox real | Firefox real |
+| Ventana | Headless nativo | Requiere `xvfb-run` (renderiza en display virtual, no headless) |
+| Ideal para | Volumen alto cuando la IP es limpia | Cuando DataDome rechaza el navegador pese a IP correcta |
+
+### Instalación del motor alternativo
+
+```bash
+uv venv --python 3.11 .venv-ipw
+VIRTUAL_ENV=.venv-ipw uv pip install -r requirements-ipw.txt
+.venv-ipw/bin/invisible-playwright fetch      # descarga el motor (~260 MB)
+chmod +x run_ipw.sh
+```
+
+En distribuciones con `libstdc++` antiguo (Ubuntu 20.04, Debian 10) el motor necesita una biblioteca más reciente; `run_ipw.sh` ya exporta `LD_LIBRARY_PATH` apuntando a `~/conda-gcc/lib` si existe.
+
+### Uso
+
+```bash
+./run_ipw.sh --city barcelona --mode catalog --max-pages 20     # cataloga ~600 fichas
+./run_ipw.sh --city barcelona --mode detail --limit 500         # extrae 500 fichas
+./run_ipw.sh --city barcelona                                   # ambas fases
+./run_ipw.sh --export-only --db tripadvisor_barcelona_ipw.db --output barcelona.csv
+```
+
+Ambos motores aceptan los mismos parámetros de pacing (`--delay-min`, `--delay-max`, `--page-delay-min`, `--page-delay-max`, `--batch-size`, `--batch-cooldown-min`, `--batch-cooldown-max`) y comparten la base de datos si se les apunta al mismo fichero, por lo que se puede empezar con uno y continuar con el otro sin perder progreso.
+
+### Notas de implementación del motor alternativo
+
+- **Validación de identidad de ficha:** antes de guardar, se comprueba que el `d{ID}` de la URL original aparezca en la URL final. Si TripAdvisor sirve otra ficha (redirección o ficha retirada), el registro se descarta en lugar de guardar datos ajenos.
+- **Selección del bloque de datos correcto:** una ficha inyecta varios bloques `application/ld+json` (restaurante + productos turísticos patrocinados). El parser puntúa cada bloque por presencia de dirección, teléfono, valoración, cocina y rango de precio y elige el de mayor puntuación, evitando que un tour patrocinado contamine el registro.
+- **Normalización de tipos:** los campos de `ld+json` pueden llegar como cadena, número, lista u objeto anidado (por ejemplo `addressCountry`); se normalizan antes de escribir en SQLite para no romper la exportación.
+- **Resiliencia:** cada ficha fallida se deja en estado `pending` y se reintenta en la siguiente ejecución; el CSV solo incluye registros `done`.
+
+---
+
 ## 🚀 Instalación y Despliegue Rápido
 
 ### En Windows (1 Clic)
