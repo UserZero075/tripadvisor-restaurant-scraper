@@ -113,7 +113,17 @@ class FastSession:
         with InvisiblePlaywright(humanize=True, headless=False, locale="es-ES") as browser:
             page = browser.new_page()
             page.goto(self.target_url, timeout=45000)
-            time.sleep(2.5)
+            # Esperar a que el interstitial / Device Check de DataDome resuelva
+            t_end = time.time() + 20
+            while time.time() < t_end:
+                if not any("captcha-delivery" in f.url for f in page.frames):
+                    break
+                try:
+                    page.evaluate("window.scrollBy(0, 100)")
+                except Exception:
+                    pass
+                time.sleep(0.8)
+            time.sleep(1.5)
             cookies = page.context.cookies()
             self.ua = page.evaluate("navigator.userAgent")
             self.dd_cookie = next((c["value"] for c in cookies if c["name"] == "datadome"), None)
@@ -192,6 +202,12 @@ def scrape_details_fast(db, target, limit=5000, geo_filter=None, delay=0.22, bat
             print(f"--- [RITMO] Total: {overall_rpm:.1f} fichas/min | Últimos 30s: {lap_rpm:.1f} fichas/min | Done: {done_count} ---", flush=True)
             last_lap = now
             lap_done = 0
+
+        # Enfriamiento periódico para drenar el bucket de DataDome
+        if i % 40 == 0:
+            cool = random.uniform(8.0, 14.0)
+            print(f"[FAST] Cooldown de seguridad: {cool:.1f}s tras {i} fichas...", flush=True)
+            time.sleep(cool)
 
         time.sleep(random.uniform(delay * 0.85, delay * 1.15))
 

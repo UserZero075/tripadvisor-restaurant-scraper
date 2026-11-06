@@ -19,6 +19,6 @@ exec xvfb-run -a --server-args="-screen 0 1400x1000x24" \
         --mode detail \
         --limit 5000 \
         --geo-filter g187497 \
-        --delay 0.12 \
+        --delay 0.45 \
         --db "$DB_FILE" \
         --output "$CSV_FILE" >> "$LOG_FILE" 2>&1
