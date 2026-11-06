@@ -146,6 +146,7 @@ class FastSession:
                     time.sleep(1)
             except Exception as e:
                 print(f"[FAST-ERR] Intento {attempt+1}: {e}", flush=True)
+                self.refresh_session()
                 time.sleep(1.5)
         return None, False
 
@@ -178,9 +179,9 @@ def scrape_details_fast(db, target, limit=5000, geo_filter=None, delay=0.22, bat
                 tel = data.get("phone") or "Sin teléfono"
                 print(f"[{done_count}/{len(to_scrape)}] OK {name_str} | {tel}", flush=True)
             else:
-                db.mark_failed(rid)
+                db.mark_failed(rid, "Datos no válidos")
         else:
-            db.mark_failed(rid)
+            db.mark_failed(rid, "Error de red/bloqueo")
 
         # Estadísticas de velocidad periódicas
         now = time.time()
