@@ -15,7 +15,7 @@ Incluye sistema avanzado de protección de IP:
 - Exportación automática a CSV con codificación UTF-8 BOM (compatible con Excel).
 
 Autor: Marlon Sarduy Machado (UserZero075)
-Repositorio: https://github.com/UserZero075/tripadvisor-barcelona-scraper
+Repositorio: https://github.com/UserZero075/tripadvisor-restaurant-scraper
 Licencia: MIT
 """
 

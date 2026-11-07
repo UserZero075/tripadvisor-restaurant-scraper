@@ -300,9 +300,14 @@ python scraper.py --check-install
 ## 📂 Estructura del Proyecto
 
 ```
-tripadvisor-barcelona-scraper/
+tripadvisor-restaurant-scraper/
 ├── scraper.py                 # Motor principal multi-ciudad con Camoufox y SQLite
-├── requirements.txt           # Dependencias oficiales (camoufox, playwright, beautifulsoup4)
+├── scraper_ipw.py             # Motor alternativo con invisible_playwright (Firefox C++)
+├── scraper_fast.py            # Motor híbrido ultra-rápido (curl_cffi + TLS impersonation)
+├── run_barcelona_fast.sh      # Runner automatizado con pacing adaptativo (~30 fichas/min)
+├── run_ipw.sh                 # Script lanzador del motor invisible_playwright
+├── requirements.txt           # Dependencias del motor Camoufox
+├── requirements-ipw.txt       # Dependencias de invisible_playwright y curl_cffi
 ├── install.bat                # Instalador desatendido para Windows
 ├── run.bat                    # Script lanzador para Windows
 ├── install.sh                 # Instalador desatendido para Linux/macOS
